@@ -6,25 +6,108 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  warning = FALSE,        # Suppress warnings
+  message = FALSE,        # Suppress package loading messages
+  echo = TRUE,           # Show R code
+  fig.width = 8,         # Set default figure width
+  fig.height = 5,        # Set default figure height
+  fig.align = 'center',  # Center figures
+  out.width = "80%",     # Make figures 80% of text width
+  dpi = 300             # Set high resolution for figures
+  )
+pacman::p_load(tidyverse, cmdstanr, tidyverse, posterior, bayesplot, tidybayes, rstan, brms,pracma)
+
 ```
 
-## R Markdown
+## Simulating data based on experimental design of the HRD (note RRST is a bit different)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+from the BRMS demo:
+*Note: To keep this simulation simple we do not use an adaptive method to optimize stimulus placement based on the responses of the participant. Instead, we simulate responses to 30 trials for each intensity within the pre-selected range (from -40 to +40 ΔBPM in increments of 5). This leads to a rather large total number of trials but the information contained in the dataset is not necessarily much more than in a dataset 10 times smaller with adaptive stimulus placement.*
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r}
+seed = 1997
+set.seed(seed)
 
-```{r cars}
-summary(cars)
+# study design
+n_sub_hrdt <- 60
+n_trials_hrdt <- 40
+x_seq_hrdt <- rep(seq(-40, 40, 5),n_trials_hrdt) # check this
+
+# Group-level parameters
+# mu_lambda_HRDT <- -4.2
+# sd_lambda_HRDT <- 2
+
+mu_beta_hrdt <- -2.3
+sd_beta_hrdt <- 0.3
+
+mu_alpha_hrdt <- -8.6
+sd_alpha_hrdt <- 11.6
+
+mu_alpha_dif_hrdt = 5
+mu_beta_dif_hrdt = 0
+
+sd_beta_dif_hrdt <- sd_beta_hrdt * 0.5
+sd_alpha_dif_hrdt <- sd_alpha_hrdt * 0.5
+
+# Simulate subject-level parameters
+subject_base_hrdt <- 
+  tibble(
+    subj = 1:n_subj_hrdt,
+    alpha_base = rnorm(n_subj_hrdt, mu_alpha_hrdt, sd_alpha_hrdt),
+  #  lambda_base = rnorm(n_subj_hrdt, mu_lambda_hrdt, sd_lambda_hrdt),
+    beta_base = rnorm(n_subj_hrdt, mu_beta_hrdt, sd_beta_hrdt),
+    alpha_effect = rnorm(n_subj_hrdt, mu_alpha_dif_hrdt, sd_alpha_dif_hrdt),
+   # lambda_effect = 0,
+    beta_effect = rnorm(n_subj_hrdt, mu_beta_dif_hrdt, sd_beta_dif_hrdt)
+  )
+
+# Expand to two conditions
+condition_data_hrdt <- 
+  subject_base_hrdt %>%
+  mutate(
+#    lambda_condition1 = inv_logit(lambda_base) / 2,
+ #   lambda_condition2 = inv_logit(lambda_base + lambda_effect) / 2,
+
+    beta_condition1 = exp(beta_base),
+    beta_condition2 = exp(beta_base + beta_effect),
+
+    alpha_condition1 = alpha_base,
+    alpha_condition2 = alpha_base + alpha_effect
+  ) %>%
+  pivot_longer(
+    cols = starts_with(c("alpha_", "beta_")),#, "lambda_")),
+    names_to = c(".value", "condition"),
+    names_pattern = "(.*)_condition(\\d)"
+  ) %>% 
+  drop_na() %>% 
+  mutate(condition = factor(condition, levels = c("1", "2"), labels = c("control", "treatment")))
+
+# Simulate trials
+sim_data_hrdt <- 
+  condition_data_hrdt %>%
+  group_by(subj, condition) %>%
+  mutate(x = list(x_seq_hrdt)) %>%
+  unnest(x) %>%
+  mutate(
+    theta = (1 - 2 * lambda) * (0.5 + 0.5 * pracma::erf(beta * (x - alpha) / sqrt(2))),
+    #theta = lambda + (1 - 2 * lambda) * (0.5 + 0.5 * pracma::erf(beta * (x - alpha) / sqrt(2))),
+    y = rbinom(n(), 1, theta)
+  ) %>%
+  group_by(subj,condition,x,theta) %>% 
+  summarise(n=sum(!is.na(y)),y=sum(y))
+
 ```
 
-## Including Plots
+We want to start with a simple model:
 
-You can also embed plots, for example:
+$$
+\alpha (threshold), \beta (slope) = f(choice,confidence, group, subject)
+$$
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+
+
+```{r}
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
