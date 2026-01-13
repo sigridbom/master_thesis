@@ -2,7 +2,9 @@
 title: "data_generating_model"
 author: "Sigrid Bom"
 date: "2026-01-13"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -16,98 +18,207 @@ knitr::opts_chunk$set(
   out.width = "80%",     # Make figures 80% of text width
   dpi = 300             # Set high resolution for figures
   )
-pacman::p_load(tidyverse, cmdstanr, tidyverse, posterior, bayesplot, tidybayes, rstan, brms,pracma)
-
+pacman::p_load(tidyverse, cmdstanr, tidyverse, posterior, bayesplot, tidybayes, rstan, brms, pracma, here)
 ```
 
-## Simulating data based on experimental design of the HRD (note RRST is a bit different)
+## Simulating data based on experimental design of the HRD (note, RRST is a bit different)
 
-from the BRMS demo:
-*Note: To keep this simulation simple we do not use an adaptive method to optimize stimulus placement based on the responses of the participant. Instead, we simulate responses to 30 trials for each intensity within the pre-selected range (from -40 to +40 ΔBPM in increments of 5). This leads to a rather large total number of trials but the information contained in the dataset is not necessarily much more than in a dataset 10 times smaller with adaptive stimulus placement.*
+Load actual data to compare
 
 ```{r}
-seed = 1997
-set.seed(seed)
+#df = read_delim("../../cicap_youth/data/pilot/hrd/recordid_13_20250707_1400HRD_final.txt")
+df = read_delim("../../cicap_youth/data/pilot/hrd/recordid_14_20250707_1440HRD_final.txt")
 
+df = df %>% mutate(
+  choice = ifelse(df$Decision == 'More', 1, 0)
+)
+
+df %>% ggplot() +
+  aes(Alpha, choice) + 
+  geom_point() + 
+  labs(
+    x = 'delta BPM',
+    y = 'probability of answering faster',
+    title = 'pilot (messy) data'
+  )
+```
+
+The participant with record id 13 has a very positive bias towards their heart rate (almost all values of delta bpm (alpha) are above 0).
+
+The participant with record id 14 has a very negative bias towards their heart rate (all values of delta bpm are negative)
+
+```{r}
+# wrangle into same form as simulated data will be - for later comparison
+emp_data = df %>% mutate(
+  subject = 1,
+  trial = 1:nrow(df),
+  stimulus = Alpha,
+  response = ifelse(df$Decision == 'More', 1, 0)
+) %>% select(subject, trial, stimulus, response)
+```
+
+# 1. Conceptual definition of (very simple) model
+
+We start simple with a logistic (psychometric) function (is that the same as a sigmoid function?)
+
+$$
+
+p(y = 1 \mid x) = \frac{1}{1 + \exp\!\left[-\beta \left(x - \alpha\right)\right]}
+
+$$
+where given p, responses are drawn from a Bernoulli (or binomial? the same?) distribution (samples 1 with probability p and 0 with probability 1-p).
+
+Below, written as a function in R
+
+```{r psychometric function}
+ psychometric_f <- function(x, alpha, beta) {
+  1 / (1 + exp(-beta * (x - alpha)))
+}
+```
+
+# 2. Design of HRDT
+
+```{r}
 # study design
 n_sub_hrdt <- 60
 n_trials_hrdt <- 40
-x_seq_hrdt <- rep(seq(-40, 40, 5),n_trials_hrdt) # check this
-
-# Group-level parameters
-# mu_lambda_HRDT <- -4.2
-# sd_lambda_HRDT <- 2
-
-mu_beta_hrdt <- -2.3
-sd_beta_hrdt <- 0.3
-
-mu_alpha_hrdt <- -8.6
-sd_alpha_hrdt <- 11.6
-
-mu_alpha_dif_hrdt = 5
-mu_beta_dif_hrdt = 0
-
-sd_beta_dif_hrdt <- sd_beta_hrdt * 0.5
-sd_alpha_dif_hrdt <- sd_alpha_hrdt * 0.5
-
-# Simulate subject-level parameters
-subject_base_hrdt <- 
-  tibble(
-    subj = 1:n_subj_hrdt,
-    alpha_base = rnorm(n_subj_hrdt, mu_alpha_hrdt, sd_alpha_hrdt),
-  #  lambda_base = rnorm(n_subj_hrdt, mu_lambda_hrdt, sd_lambda_hrdt),
-    beta_base = rnorm(n_subj_hrdt, mu_beta_hrdt, sd_beta_hrdt),
-    alpha_effect = rnorm(n_subj_hrdt, mu_alpha_dif_hrdt, sd_alpha_dif_hrdt),
-   # lambda_effect = 0,
-    beta_effect = rnorm(n_subj_hrdt, mu_beta_dif_hrdt, sd_beta_dif_hrdt)
-  )
-
-# Expand to two conditions
-condition_data_hrdt <- 
-  subject_base_hrdt %>%
-  mutate(
-#    lambda_condition1 = inv_logit(lambda_base) / 2,
- #   lambda_condition2 = inv_logit(lambda_base + lambda_effect) / 2,
-
-    beta_condition1 = exp(beta_base),
-    beta_condition2 = exp(beta_base + beta_effect),
-
-    alpha_condition1 = alpha_base,
-    alpha_condition2 = alpha_base + alpha_effect
-  ) %>%
-  pivot_longer(
-    cols = starts_with(c("alpha_", "beta_")),#, "lambda_")),
-    names_to = c(".value", "condition"),
-    names_pattern = "(.*)_condition(\\d)"
-  ) %>% 
-  drop_na() %>% 
-  mutate(condition = factor(condition, levels = c("1", "2"), labels = c("control", "treatment")))
-
-# Simulate trials
-sim_data_hrdt <- 
-  condition_data_hrdt %>%
-  group_by(subj, condition) %>%
-  mutate(x = list(x_seq_hrdt)) %>%
-  unnest(x) %>%
-  mutate(
-    theta = (1 - 2 * lambda) * (0.5 + 0.5 * pracma::erf(beta * (x - alpha) / sqrt(2))),
-    #theta = lambda + (1 - 2 * lambda) * (0.5 + 0.5 * pracma::erf(beta * (x - alpha) / sqrt(2))),
-    y = rbinom(n(), 1, theta)
-  ) %>%
-  group_by(subj,condition,x,theta) %>% 
-  summarise(n=sum(!is.na(y)),y=sum(y))
+delta_bpm <- rep(seq(-40, 40, 5),n_trials_hrdt) # might need to change range based on what's plausible
 
 ```
 
-We want to start with a simple model:
+```{r}
+sim_data <- expand.grid(
+  subject = factor(1:n_sub_hrdt),
+  trial   = 1:n_trials_hrdt
+)
 
-$$
-\alpha (threshold), \beta (slope) = f(choice,confidence, group, subject)
-$$
+sim_data$stimulus <- sample(delta_bpm, nrow(sim_data), replace = TRUE)
+# random trial stimulus (delta_bpm - doesn't not take the adaptive algorithm of the experiment into account)
 
+```
+
+# 3. Generate responses based on set values of alpha and beta
+
+```{r parameter values}
+# seed
+seed = 1997
+set.seed(seed)
+
+# parameters
+alpha <- 0     # threshold
+beta  <- 2   # slope
+```
+
+```{r}
+# generate probability of answering 1, faster based on psychometric function
+sim_data$p_faster <- psychometric_f(
+  x     = sim_data$stimulus,
+  alpha = alpha,
+  beta  = beta
+)
+
+# generate responses
+sim_data$response <- rbinom(
+  n = nrow(sim_data),
+  size = 1,
+  prob = sim_data$p_faster
+)
+
+```
+
+# 4. Plotting the simulated data
+
+```{r}
+sim_data %>% 
+  filter(subject == 1) %>% 
+  ggplot() + 
+  aes(stimulus, response) + 
+  geom_point() + 
+  geom_line(aes(y = p_faster))
+```
+looks like the perfect participant
 
 
 ```{r}
+# summarising and plotting empirical and simulated data 
+emp_summary <- emp_data %>%
+  group_by(stimulus) %>%
+  summarise(
+    p_faster = mean(response),
+    n     = n()
+  )
+
+sim_summary <- sim_data %>%
+  group_by(stimulus) %>%
+  summarise(
+    p_faster = mean(response),
+    n     = n()
+  )
+
+
+ggplot() +
+  geom_point(
+    data = emp_summary,
+    aes(x = stimulus, y = p_faster),
+    size = 3
+  ) +
+  geom_point(
+    data = sim_summary,
+    aes(x = stimulus, y = p_faster),
+    shape = 1,
+    size = 3
+  ) +
+  labs(
+    x = "Stimulus intensity",
+    y = "Proportion 'yes'",
+    title = "Empirical (filled) vs simulated (open) data"
+  ) +
+  theme_minimal()
 
 ```
 
+now, the empirical data is not perfect in this example, but there is slight trend of something that looks like a psychometric function. slight
+
+```{r}
+# checking things
+range(beta * (sim_data$stimulus - alpha))
+
+tapply(sim_data$p_faster, sim_data$stimulus, mean)
+
+tapply(sim_data$response, sim_data$stimulus, mean)
+
+```
+
+# now for trying different values of alpha and beta
+
+```{r}
+# Parameter values
+alpha_vals <- c(-20, 0, 20)   # threshold
+beta_vals  <- c(0.1, 0.3, 2)    # slope
+delta_bpm <- rep(seq(-40, 40, 5),n_trials_hrdt) # check that this is the actual range
+
+# create combinations of different parameter values
+sim_grid <- expand.grid(
+  alpha = alpha_vals,
+  beta  = beta_vals,
+  stimulus = delta_bpm
+)
+
+# create probabilities using psychometric function
+sim_grid <- sim_grid %>%
+  mutate(p_faster = psychometric_f(stimulus, alpha, beta))
+```
+
+```{r}
+ggplot(sim_grid, aes(x = stimulus, y = p_faster)) +
+  geom_line(size = 1) +
+  facet_grid(alpha ~ beta, labeller = label_both) +
+  labs(
+    x = "delta BPM",
+    y = "Probability of 'faster'",
+    title = "Psychometric curves for different alpha and beta values"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+### Parameter recovery - next step
