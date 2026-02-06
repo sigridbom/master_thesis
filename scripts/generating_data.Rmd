@@ -266,7 +266,7 @@ first the simple model with lapse rate, which according to Jesper, you achieve b
 $$
 \lambda + (1-2*\lambda) * F(x)
 $$
-where F(x) is one's function.
+where F(x) is one's psychometric function.
 This means that the simple model with a lape rate would look like this:
 
 $$
@@ -340,13 +340,8 @@ sim_data_simple_lapse %>%
 ```
 
 
-# Conceptual definition of a model with lapse rate
+# Conceptual definition of Jesper's more advanced model (probit regression) with lapse rate
 
-$$
-
-p(y = 1 \mid x) = \frac{1}{1 + \exp\!\left[-\beta \left(x - \alpha\right)\right]}
-
-$$
 
 $$
 
@@ -368,14 +363,19 @@ inv_logit<-function(x){
   return(y)
 }
 ```
+
+```{r}
+pacman::p_load(pracma)
 ```
+
+```{r}
+pracma::erf(10)
+```
+-- issue with ERF - 
 
 and then we do the same as before (but with a negative value of lambda based on Jesper's thesis - I don't know why)
 
-
-
 ```{r}
-
 lambda = -2
 
 # generate probability of answering 1, faster based on psychometric function
@@ -395,6 +395,13 @@ sim_data_lapse$response <- rbinom(
   size = 1,
   prob = inv_logit(sim_data_lapse$p_faster)
 )
+
+probit_regression(
+  x     = 10,
+  alpha = alpha,
+  beta  = beta,
+  lambda = lambda
+)
 ```
 
 ```{r}
@@ -411,7 +418,7 @@ sim_data_lapse %>%
                  fill = "grey80") +
   geom_density(linewidth = 1) +
   labs(
-    x = "Probability of answering faster",
+    x = "Probability of answering 'faster'",
     y = "Density"
   ) +
   theme_classic()
@@ -428,6 +435,6 @@ sim_data_lapse %>%
 ```
 
 
-
+# next step - shiny app
 ### Parameter recovery - next step
 
