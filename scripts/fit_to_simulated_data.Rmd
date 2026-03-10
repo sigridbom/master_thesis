@@ -1,0 +1,364 @@
+---
+title: "fit_to_simulated_data"
+author: "Sigrid Bom"
+date: "2026-02-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#first time installing cmdstanr?
+#install.packages("cmdstanr", repos = c('https://stan-dev.r-universe.dev', getOption("repos")))
+install_cmdstan()
+```
+
+```{r load packages}
+pacman::p_load(
+  tidyverse,
+  here,
+  posterior,
+  cmdstanr,
+  brms, tidybayes, future, purrr, furrr, prettydoc, patchwork, stringr, ggpubr,
+  pracma
+  )
+```
+
+```{r}
+# functions
+
+# probit regression - psychometric function
+ probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+ }
+
+# inverse logit
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+```
+
+
+# simulate data
+
+```{r}
+# parameters
+alpha = -8
+lambda = 0.05
+beta = 15
+N = 100 # number of trials
+
+# simlate data
+sim_data = data.frame(deltaBPM = rnorm(N,0,10), subject = 1) %>% mutate(trial = 1:n()) # notice sampling from normal distr
+# also too many trials compared to my set-up
+
+# generate probability of answering 1, faster based on psychometric function
+# could also be called true theta
+sim_data$p_faster <- probit_regression(
+  x     = sim_data$deltaBPM,
+  alpha = alpha,
+  beta  = beta,
+  lambda = lambda
+)
+
+# generate choices - missing in stan code?
+sim_data$choice <- rbinom(
+  n = nrow(sim_data),
+  size = 1,
+  prob = sim_data$p_faster
+  #prob = lambda + (1-2*lambda)*inv_logit((sim_data$deltaBPM - alpha)/beta)
+)
+```
+
+
+```{r}
+# make data stan friendly i.e. in list form 
+simple_stan_data <- list(
+  N = nrow(sim_data),
+  dBPM = sim_data$deltaBPM,
+  choice = sim_data$choice
+)
+
+str(simple_stan_data)
+```
+
+```{r}
+# specify stan file path and compile model 
+
+file = file.path('simple_model_hrd.stan')
+model <- cmdstan_model(
+  file)#, 
+#  cpp_options = list(stan_threads = FALSE), # enable threading - don't know what this means
+#  stanc_options = list("O1")) # basic optimization - don't know how
+
+```
+
+```{r}
+#sampling
+start_time <- Sys.time()
+
+fit <- model$sample(
+  data = simple_stan_data,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  #threads_per_chain = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 500#,
+ # show_messages= FALSE
+)
+
+end_time <- Sys.time()
+time_equal <- end_time - start_time
+print(time_equal)
+# Time difference of 
+```
+Status: it runs - maybe? get plots
+
+```{r}
+fit$cmdstan_diagnose() # no problems detected
+fit$summary()
+```
+
+```{r}
+pacman::p_load(bayesplot)
+mcmc_trace(fit$draws('alpha')) 
+mcmc_trace(fit$draws('beta')) 
+mcmc_trace(fit$draws('lambda')) 
+```
+
+I need to get:
+- true value of theta pr trial 
+- theta prior value - what is it? 
+
+need to generate
+```{r}
+# Plot the posterior distribution vs. prior
+draws_df <- as_draws_df(fit$draws())
+
+# mangler priors
+ggplot(draws_df) +
+  geom_density(aes(`theta_p[1]`, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(`theta_prior_p[1]`, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = sim_data$p_faster[1], linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta) - trial 1",
+    subtitle = "Data shifts belief from uniform prior towards true value (vertical line)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) + theme_minimal()
+
+# mangler priors
+ggplot(draws_df) +
+  geom_density(aes(`theta_p[70]`, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(`theta_prior_p[70]`, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = sim_data$p_faster[70], linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta) - trial 70",
+    subtitle = "Data shifts belief from uniform prior towards true value (vertical line)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) + theme_minimal()
+
+# mangler priors
+ggplot(draws_df) +
+  geom_density(aes(`theta_p[3]`, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(`theta_prior_p[3]`, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = sim_data$p_faster[3], linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta) - trial 3",
+    subtitle = "Data shifts belief from uniform prior towards true value (vertical line)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) +
+  theme_minimal()
+
+# mangler priors
+ggplot(draws_df) +
+  geom_density(aes(`theta_p[5]`, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(`theta_prior_p[5]`, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = sim_data$p_faster[5], linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta) - trial 5",
+    subtitle = "Data shifts belief from uniform prior towards true value (vertical line)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+
+# alpha - 
+ggplot(draws_df) +
+  geom_density(aes(alpha, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(alpha_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = alpha, linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (alpha)",
+    subtitle = "",
+    x = "Threshold",
+    y = "Density",
+    fill = "Distribution"
+  ) + theme_minimal()
+
+# beta
+ggplot(draws_df) +
+  geom_density(aes(beta, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(beta_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = beta, linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (beta)",
+    subtitle = "",
+    x = "Slope",
+    y = "Density",
+    fill = "Distribution"
+  ) + theme_minimal()
+
+
+# lambda
+ggplot(draws_df) +
+  geom_density(aes(lambda, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(lambda_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = lambda, linetype = "dashed", color = "black", size = 1.2) + # True value 
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (lambda)",
+    subtitle = "",
+    x = "Lapse rate",
+    y = "Density",
+    fill = "Distribution"
+  ) + theme_minimal()
+```
+
+```{r}
+draws_df %>% ggplot() + aes(x=alpha, y = beta) +
+  geom_point() + geom_smooth()
+
+draws_df %>% ggplot() + aes(x=alpha, y = lambda) +
+  geom_point() + geom_smooth()
+
+draws_df %>% ggplot() + aes(x=beta, y = lambda) +
+  geom_point() + geom_smooth()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+# tried to make a plot function - doesn't work 
+
+plot_theta <- function(trial_no){
+  ggplot(draws_df) +
+  geom_density(aes(fprintf("draws_df$`theta_p[%d]`", number))) + #, fill = "Posterior"), alpha = 0.6) +
+#  geom_vline(xintercept = sim_data$p_faster[trial_no], linetype = "dashed", color = "black", size = 1.2) + # True value
+#  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta)",
+    subtitle = "Data shifts belief from uniform prior towards true value (0.8)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) +
+  theme_minimal()
+}
+ 
+plot_theta(1)
+```
+
+
+```{r}
+test_function <- function(number){
+  print(number)
+  fprintf("draws_df$`theta_p[%d]`[1]", number)
+ # print(draws_df$`theta_p[number]`[1])
+}
+
+test_function(1)
+
+ggplot(draws_df) +
+  geom_density(aes(draws_df$`theta_p[1]`)) + #, fill = "Posterior"), alpha = 0.6) +
+  geom_vline(xintercept = sim_data$p_faster[1], linetype = "dashed", color = "black", size = 1.2) + # True value - but I don't know what the true value is?? 
+#  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta)",
+    subtitle = "Data shifts belief from uniform prior towards true value (0.8)",
+    x = "Theta (Probability of Choosing Faster)",
+    y = "Density",
+    fill = "Distribution"
+  ) +
+  theme_minimal()
+
+
+ggplot(draws_df) +
+  geom_density(aes("theta_p[1]", fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(theta_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", color = "black", size = 1.2) + # True value
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title = "Prior-Posterior Update Check (Theta)",
+    subtitle = "Data shifts belief from uniform prior towards true value (0.8)",
+    x = "Theta (Probability of Choosing Right)",
+    y = "Density",
+    fill = "Distribution"
+  ) +
+  theme_minimal()
+```
+
+
+
+
+
+```{r}
+  plot = draws %>% ggplot() +
+    geom_bar(aes_string(prior), fill = 'pink', position = 'stack') +
+    ggtitle(label = "Prior") #+ 
+  draws %>% ggplot() +
+    geom_bar(aes_string(post), fill = 'lightblue', position = 'stack') +
+    ggtitle(label = "Posterior") +
+  draws %>% ggplot() +
+    geom_bar(aes_string(cor), fill = 'lightgreen', position = 'stack') +
+    ggtitle(label = "Correct")
+```
+

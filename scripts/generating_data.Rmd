@@ -82,17 +82,17 @@ Below, written as a function in R
 # study design
 n_sub_hrdt <- 60
 n_trials_hrdt <- 40
-delta_bpm <- rep(seq(-40, 40, 5),n_trials_hrdt) # might need to change range based on what's plausible
+delta_bpm <- rep(seq(-40, 40, 1),n_trials_hrdt) # might need to change range based on what's plausible
 
 ```
 
 ```{r}
-sim_data <- expand.grid(
+sim_data_sigrid <- expand.grid(
   subject = factor(1:n_sub_hrdt),
   trial   = 1:n_trials_hrdt
 )
 
-sim_data$stimulus <- sample(delta_bpm, nrow(sim_data), replace = TRUE) # sampling with replacement, independent samples
+sim_data_sigrid$stimulus <- sample(delta_bpm, nrow(sim_data_sigrid), replace = TRUE) # sampling with replacement, independent samples
 # random trial stimulus (delta_bpm - doesn't not take the adaptive algorithm of the experiment into account)
 
 ```
@@ -106,22 +106,22 @@ set.seed(seed)
 
 # parameters
 alpha <- 0     # threshold
-beta  <- 2   # slope
+beta  <- 10   # slope
 ```
 
 ```{r}
 # generate probability of answering 1, faster based on psychometric function
-sim_data$p_faster <- psychometric_f(
-  x     = sim_data$stimulus,
+sim_data_sigrid$p_faster <- psychometric_f(
+  x     = sim_data_sigrid$stimulus,
   alpha = alpha,
   beta  = beta
 )
 
 # generate responses
-sim_data$response <- rbinom(
-  n = nrow(sim_data),
+sim_data_sigrid$response <- rbinom(
+  n = nrow(sim_data_sigrid),
   size = 1, # this is 1, because we are not simulating aggregated data (i.e., 20 repeated trials per stimulus level) - so when set to 1, we effectively draw from a Bernoulli distribution and have independent samples
-  prob = sim_data$p_faster
+  prob = sim_data_sigrid$p_faster
 )
 
 
@@ -132,7 +132,7 @@ sim_data$response <- rbinom(
 
 ```{r}
 # plotting the probabilities of answering 'faster'
-sim_data %>%
+sim_data_sigrid %>%
   ggplot(aes(x = p_faster)) +
   geom_histogram(aes(y = after_stat(density)),
                  bins = 30,
@@ -150,7 +150,7 @@ Not sure this is how we want it to look.
 
 ```{r}
 # plotting the range of stim level 
-sim_data %>%
+sim_data_sigrid %>%
   ggplot(aes(x = stimulus)) +
   geom_histogram(aes(y = after_stat(density)),
                  bins = 30,
@@ -158,7 +158,7 @@ sim_data %>%
                  fill = "grey80") +
   geom_density(linewidth = 1) +
   labs(
-    x = "Probability of answering faster",
+    x = "Stimulus",
     y = "Density"
   ) +
   theme_classic()
@@ -352,7 +352,7 @@ which can be written in R as follows
 
 ```{r}
  probit_regression <- function(x, alpha, beta, lambda) {
-  lambda + (1 - 2 * lambda) * (0.5+0.5*erf((x-alpha)/(beta*sqrt(2))))
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
 }
 ```
 
@@ -369,17 +369,31 @@ pacman::p_load(pracma)
 ```
 
 ```{r}
-pracma::erf(10)
+0.5+0.5*erf(-20)
 ```
 -- issue with ERF - 
 
 and then we do the same as before (but with a negative value of lambda based on Jesper's thesis - I don't know why)
 
 ```{r}
-lambda = -2
+lambda = 0.05
+beta = 10
+N = 100
+
+
+# old
+# sim_data_sigrid <- expand.grid(
+#   subject = factor(1:n_sub_hrdt),
+#   trial   = 1:n_trials_hrdt
+# )
+#sim_data_sigrid$stimulus <- sample(delta_bpm, nrow(sim_data_sigrid), replace = TRUE) # sampling with replacement, independent samples
+
+# new 
+sim_data_sigrid = data.frame(stimulus = rnorm(N,0,10), subject = 1) %>% mutate(trial = 1:n())
+
 
 # generate probability of answering 1, faster based on psychometric function
-sim_data_lapse = sim_data %>% 
+sim_data_lapse = sim_data_sigrid %>% 
   select(c(subject, trial, stimulus))
 
 sim_data_lapse$p_faster <- probit_regression(
@@ -393,16 +407,76 @@ sim_data_lapse$p_faster <- probit_regression(
 sim_data_lapse$response <- rbinom(
   n = nrow(sim_data_lapse),
   size = 1,
-  prob = inv_logit(sim_data_lapse$p_faster)
+  prob = sim_data_lapse$p_faster
 )
 
+# generate responses
+sim_data_lapse$response <- rbinom(
+  n = nrow(sim_data_lapse),
+  size = 1,
+  prob = lambda + (1-2*lambda)*inv_logit((sim_data_lapse$stimulus - alpha)/beta)
+)
+
+  #prob = inv_logit(sim_data_lapse$p_faster)
+  #prob = sim_data_lapse$p_faster
+
+#trying things
 probit_regression(
-  x     = 10,
+  x     = -10,
   alpha = alpha,
   beta  = beta,
   lambda = lambda
 )
+
+erf(10)
 ```
+
+```{r}
+sim_data_sigrid %>% ggplot() + 
+  aes(x = stimulus) + 
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Stim",
+    y = "Density"
+  ) +
+  theme_classic()
+
+sim_data_lapse %>% ggplot() +
+  aes(x = p_faster) +
+  geom_histogram(bins = 30)
+
+# plotting the probabilities of answering 'faster'
+sim_data_lapse %>%
+  ggplot(aes(x = p_faster))  +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Probability of answering 'faster'",
+    y = "Density"
+  ) +
+  theme_classic()
+
+
+sim_data_lapse %>%
+  ggplot(aes(x = (stimulus), y = p_faster)) +
+  geom_jitter()+
+  labs(
+    x = "Delta BPM",
+    y = "Probability of answering 'faster'"
+  ) +
+  theme_classic()
+```
+```{r}
+pracma::erf(0)
+```
+
 
 ```{r}
 sim_data_lapse %>% ggplot() +
@@ -437,4 +511,82 @@ sim_data_lapse %>%
 
 # next step - shiny app
 ### Parameter recovery - next step
+
+jespers kode
+
+```{r}
+probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+}
+
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+
+N = 100
+alpha = 0
+beta = 10
+lambda = 0.05
+
+sim_data = data.frame(stimulus = rnorm(N,0,10), subject = 1) %>% mutate(trial = 1:n())
+
+sim_data %>% ggplot() + 
+  aes(x = stimulus) + 
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Stim",
+    y = "Density"
+  ) +
+  theme_classic()
+
+# generate probability of answering 1, faster based on psychometric function
+sim_data_lapse = sim_data %>%
+  select(c(subject, trial, stimulus))
+
+sim_data_lapse$p_faster <- probit_regression(
+  x     = sim_data_lapse$stimulus,
+  alpha = alpha,
+  beta  = beta,
+  lambda = lambda
+)
+
+# generate responses
+sim_data_lapse$response <- rbinom(
+  n = nrow(sim_data_lapse),
+  size = 1,
+  prob = inv_logit(sim_data_lapse$p_faster)
+)
+
+
+# plotting the probabilities of answering 'faster'
+sim_data_lapse %>%
+  ggplot(aes(x = (p_faster))) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Probability of answering 'faster'",
+    y = "Density"
+  ) +
+  theme_classic()
+
+
+sim_data_lapse %
+  ggplot(aes(x = (stimulus), y = p_faster)) +
+  geom_jitter()+
+  labs(
+    x = "Delta BPM",
+    y = "Probability of answering 'faster'"
+  ) +
+  theme_classic()
+```
+
+lav ny model, der sampler stimulus som jesper foreslår, ud fra deltageres threshold (hvordan gør jeg det) og med 2x beta SD
 

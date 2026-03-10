@@ -1,0 +1,202 @@
+---
+title: "parameter_recovery"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#first time installing cmdstanr?
+#install.packages("cmdstanr", repos = c('https://stan-dev.r-universe.dev', getOption("repos")))
+install_cmdstan()
+```
+
+```{r load packages}
+pacman::p_load(
+  tidyverse,
+  here,
+  posterior,
+  cmdstanr,
+  brms, tidybayes, future, purrr, furrr, prettydoc, patchwork, stringr, ggpubr,
+  pracma
+  )
+```
+
+
+```{r}
+# functions
+
+# probit regression - psychometric function
+ probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+ }
+
+# inverse logit
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+```
+
+# Parameter recovery - one participant
+
+```{r}
+simulate_data <- function(alpha, beta, lambda, N) {
+  
+  sim_data <- data.frame(
+    deltaBPM = rnorm(N, 0, 10),
+    subject = 1
+  ) %>%
+    mutate(trial = 1:n())
+  
+  sim_data$p_faster <- probit_regression(
+    x = sim_data$deltaBPM,
+    alpha = alpha,
+    beta = beta,
+    lambda = lambda
+  )
+  
+  sim_data$choice <- rbinom(
+    n = nrow(sim_data),
+    size = 1,
+    prob = sim_data$p_faster
+  )
+  
+  list(
+    N = N,
+    dBPM = sim_data$deltaBPM,
+    choice = sim_data$choice
+  )
+}
+```
+
+```{r}
+trial_sizes <- c(50, 100)
+n_rep <- 2
+
+param_grid <- expand.grid(
+  alpha  = c(-12, -8, -4),
+  beta   = c(10, 15, 20),
+  lambda = c(0.01, 0.05),
+  N      = trial_sizes,
+  rep    = 1:n_rep
+)
+```
+
+```{r}
+# specify stan file path and compile model 
+
+file = file.path('simple_model_hrd.stan')
+model <- cmdstan_model(
+  file)#, 
+#  cpp_options = list(stan_threads = FALSE), # enable threading - don't know what this means
+#  stanc_options = list("O1")) # basic optimization - don't know how
+```
+
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+results <- vector("list", nrow(param_grid))
+
+for (i in seq_len(nrow(param_grid))) {
+  
+  cat("Running simulation", i, "of", nrow(param_grid), "\n")
+  
+  pars <- param_grid[i,]
+  
+  stan_data <- simulate_data(
+    alpha  = pars$alpha,
+    beta   = pars$beta,
+    lambda = pars$lambda,
+    N      = pars$N
+  )
+  
+  fit <- model$sample(
+    data = stan_data,
+    seed = 123,
+    chains = 4,
+    parallel_chains = 4,
+    iter_warmup = 1000,
+    iter_sampling = 4000,
+    show_messages = FALSE,
+    refresh = 0
+  )
+  
+  #post <- fit$summary()
+  draws_rec <- as_draws_df(fit$draws()) # same thing as running fit$summary() and getting the mean
+  
+  results[[i]] <- tibble(
+    alpha_true  = pars$alpha,
+    beta_true   = pars$beta,
+    lambda_true = pars$lambda,
+    N           = pars$N,
+    rep         = pars$rep,
+    alpha_est   = mean(draws_rec$alpha),
+    beta_est    = mean(draws_rec$beta),
+    lambda_est  = mean(draws_rec$lambda)
+  )
+}
+
+recovery_results <- bind_rows(results)
+```
+
+# beta(1,1)
+
+```{r}
+# checking things
+first_results = recovery_results
+
+mean(draws_rec$alpha)
+first_results
+recovery_results
+t=fit$summary()
+t$mean[2]
+fit$summary()
+```
+
+```{r}
+recovery_results %>%
+  group_by(N) %>%
+  summarise(
+    cor_alpha  = cor(alpha_true, alpha_est),
+    cor_beta   = cor(beta_true, beta_est),
+    cor_lambda = cor(lambda_true, lambda_est)
+  )
+```
+```{r, message=FALSE, warning=FALSE, results='hide'}
+ggplot(recovery_results, aes(alpha_true, alpha_est)) +
+  geom_point(alpha = .5) +
+  geom_smooth() +
+  geom_line(aes(x=alpha_true, y = alpha_true), color = 'red') +
+  facet_wrap(~N) + 
+  labs(
+    title = "Parameter recovery of alpha"
+  )
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+recovery_results %>% ggplot() +
+  aes(beta_true, beta_est) +
+  geom_point(alpha = .5) +
+  geom_smooth() +
+  geom_line(aes(x=beta_true, y = beta_true), color = 'red') +
+  facet_wrap(~N) + 
+  labs(
+    title = "Parameter recovery of beta"
+  )
+```
+```{r, message=FALSE, warning=FALSE, results='hide'}
+recovery_results %>% ggplot() +
+  aes(lambda_true, lambda_est) +
+  geom_point(alpha = .5) +
+  geom_smooth() +
+  geom_line(aes(x=lambda_true, y = lambda_true), color = 'red') +
+  facet_wrap(~N) + 
+  labs(
+    title = "Parameter recovery of lambda"
+  )
+```
+
+
+prøv ny beta prior inde på hans course notes - chapter 5
