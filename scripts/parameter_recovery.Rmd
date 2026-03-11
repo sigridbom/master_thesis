@@ -11,7 +11,19 @@ knitr::opts_chunk$set(echo = TRUE)
 #first time installing cmdstanr?
 #install.packages("cmdstanr", repos = c('https://stan-dev.r-universe.dev', getOption("repos")))
 install_cmdstan()
+pacman::p_load(cli)
+#pacman::p_load(remotes)
+#remotes::install_version("cli", version = "3.6.5")
+pacman::p_load(devtools)
+devtools::install_github("hyunjimoon/SBC")
 ```
+
+```{r}
+# want progress bars? 
+pacman::p_load(progressr)
+progressr::handlers(global = TRUE) # run this in the console
+```
+
 
 ```{r load packages}
 pacman::p_load(
@@ -199,4 +211,71 @@ recovery_results %>% ggplot() +
 ```
 
 
-prøv ny beta prior inde på hans course notes - chapter 5
+prøv ny beta prior inde på hans course notes - chapter 5 - gjorde ikke nogen nævneværdig forskel
+
+```{r}
+# Define the model
+file = file.path('simple_model_hrd.stan')
+model <- cmdstan_model(file)
+
+# Define the backend engine
+backend <- SBC::SBC_backend_cmdstan_sample(
+  model,
+  chains = 1,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 0
+)
+
+# Define the generator
+generate_one_dataset <- function(){
+  # data 
+  deltaBPM = rnorm(100, 0, 10)
+  #parameters
+  alpha_true = rnorm(n = 1, mean = -10, sd = 1.5)
+  b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.4)
+  beta_true = exp(b_log_true)
+  lambda_log_true = rnorm(n = 1, mean = -3, sd = 0.4)
+  lambda_true= 0.5*inv_logit(lambda_log_true)
+#  lambda_true = exp(lambda_log_true)
+  
+  # fprintf("alpha_true: %f\n", alpha_true)
+  # fprintf("beta_true: %f\n", beta_true)
+  # fprintf("lambda_true: %f\n", lambda_true)
+  
+  #probability of answering faster
+  theta_prob_true = probit_regression(
+    x=deltaBPM,
+    alpha = alpha_true,
+    beta = beta_true,
+    lambda = lambda_true
+  )
+  #fprintf("theta_prob_true: %f\n", theta_prob_true)
+  
+  #simulate one dataset w N trials
+  y_sim = rbinom(n=100, size = 1, prob = theta_prob_true) #why is n = 100 and size = 1? if n is number of observations and size is number of trials?
+  list(
+    variables = list(alpha = alpha_true, b_log = b_log_true, lambda_log = lambda_log_true),
+    generated = list(N = 100, dBPM = deltaBPM, choice = y_sim)
+  )
+}
+
+# Register the generator function
+generator <- SBC::SBC_generator_function(generate_one_dataset)
+
+# Execute simulation based calibration
+datasets <- SBC::generate_datasets(generator, n_sims = 1000)
+sbc_results <- SBC::compute_SBC(datasets, backend)
+```
+
+```{r}
+sbc_results$default_diagnostics
+sbc_results$backend_diagnostics
+sbc_results$warnings
+# doesn't look good - looks better after lambda transformation?
+```
+
+```{r}
+SBC::plot_rank_hist(sbc_results)
+```
+

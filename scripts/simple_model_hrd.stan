@@ -32,7 +32,7 @@ parameters {
 // exploration
 transformed parameters{
   real<lower=0> beta = exp(b_log);
-  real<lower=0> lambda = exp(lambda_log);
+  real<lower=0> lambda = 0.5*inv_logit(lambda_log);//exp(lambda_log);
 }
 
 // The model to be estimated. We model the output
