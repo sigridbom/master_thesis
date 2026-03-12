@@ -24,7 +24,7 @@ data {
 parameters {
   real alpha;// threshold  
   real b_log; // slope, we might add an upper boundary
-  real lambda_log;// lapse rate, we might add an upper boundary
+  real lambda_logit;// lapse rate, we might add an upper boundary
 }
 
 // the transformations will bring the parameters back to the meaningful range
@@ -32,7 +32,7 @@ parameters {
 // exploration
 transformed parameters{
   real<lower=0> beta = exp(b_log);
-  real<lower=0> lambda = 0.5*inv_logit(lambda_log);//exp(lambda_log);
+  real<lower=0> lambda = 0.5*inv_logit(lambda_logit);//exp(lambda_log);
 }
 
 // The model to be estimated. We model the output
@@ -44,7 +44,7 @@ model {
   // priors
   target += normal_lpdf(alpha| -10, 1.5); 
   target += normal_lpdf(b_log | 2.5, .4); 
-  target += normal_lpdf(lambda_log | -3, .4);
+  target += normal_lpdf(lambda_logit | -3, .4);
   
   // likelihood
   theta = lambda + (1-2*lambda)*(0.5+0.5*erf((dBPM - alpha)/(beta*sqrt(2))));
@@ -60,11 +60,11 @@ generated quantities{
   
   real alpha_prior;
   real b_log_prior;
-  real lambda_log_prior;
+  real lambda_logit_prior;
 
   alpha_prior = normal_rng(-10, 1.5);
   b_log_prior       = normal_rng(2.5, 0.4);
-  lambda_log_prior  = normal_rng(-3, 0.4);
+  lambda_logit_prior  = normal_rng(-3, 0.4);
   
   // trying non-informed priors - did not improve things
   //alpha_prior = beta(1,1);
@@ -72,7 +72,7 @@ generated quantities{
   //lambda_log_prior = beta(1,1);
   
   real beta_prior = exp(b_log_prior);
-  real lambda_prior = exp(lambda_log_prior);
+  real lambda_prior = exp(lambda_logit_prior);
   
   vector<lower=0, upper=1>[N] theta_prior_p;
   

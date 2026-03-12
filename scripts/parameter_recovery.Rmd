@@ -235,8 +235,8 @@ generate_one_dataset <- function(){
   alpha_true = rnorm(n = 1, mean = -10, sd = 1.5)
   b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.4)
   beta_true = exp(b_log_true)
-  lambda_log_true = rnorm(n = 1, mean = -3, sd = 0.4)
-  lambda_true= 0.5*inv_logit(lambda_log_true)
+  lambda_logit_true = rnorm(n = 1, mean = -3, sd = 0.4)
+  lambda_true= 0.5*inv_logit(lambda_logit_true)
 #  lambda_true = exp(lambda_log_true)
   
   # fprintf("alpha_true: %f\n", alpha_true)
@@ -255,7 +255,7 @@ generate_one_dataset <- function(){
   #simulate one dataset w N trials
   y_sim = rbinom(n=100, size = 1, prob = theta_prob_true) #why is n = 100 and size = 1? if n is number of observations and size is number of trials?
   list(
-    variables = list(alpha = alpha_true, b_log = b_log_true, lambda_log = lambda_log_true),
+    variables = list(alpha = alpha_true, b_log = b_log_true, lambda_logit = lambda_logit_true),
     generated = list(N = 100, dBPM = deltaBPM, choice = y_sim)
   )
 }
