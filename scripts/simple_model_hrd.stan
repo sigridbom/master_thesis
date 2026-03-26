@@ -42,7 +42,7 @@ model {
   vector[N] theta; // stan doesn't allow constraints of parameters in model block (removed 0-1) - should this be in the data section?
 
   // priors
-  target += normal_lpdf(alpha| -10, 1.5); 
+  target += normal_lpdf(alpha| -10, 10); 
   target += normal_lpdf(b_log | 2.5, .4); 
   target += normal_lpdf(lambda_logit | -3, .4);
   
