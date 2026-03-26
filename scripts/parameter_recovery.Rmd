@@ -52,6 +52,13 @@ inv_logit<-function(x){
 }
 ```
 
+```{r}
+# for saving stan results
+model_file_1 <- here("..", "stan_results", "01_simpleHRD.rds")
+
+```
+
+
 # Parameter recovery - one participant
 
 ```{r}
@@ -221,22 +228,30 @@ model <- cmdstan_model(file)
 # Define the backend engine
 backend <- SBC::SBC_backend_cmdstan_sample(
   model,
-  chains = 1,
+  chains = 4,
+  parallel_chains = 4,
   iter_warmup = 1000,
   iter_sampling = 2000,
   refresh = 0
 )
 
+N = 100
+
 # Define the generator
-generate_one_dataset <- function(){
-  # data 
-  deltaBPM = rnorm(100, 0, 10)
+generate_one_dataset <- function(N){
+
   #parameters
-  alpha_true = rnorm(n = 1, mean = -10, sd = 1.5)
+  alpha_true = rnorm(n = 1, mean = -10, sd = 10) # kør bredere SD
   b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.4)
   beta_true = exp(b_log_true)
   lambda_logit_true = rnorm(n = 1, mean = -3, sd = 0.4)
   lambda_true= 0.5*inv_logit(lambda_logit_true)
+  
+  # data 
+  deltaBPM = rnorm(N, alpha_true, 2*beta_true)
+  #estimerer psi - men uden at være psi algoritmen
+  # psi = placement af stimuli - har ikke noget at gøre med PR og SBC
+  # nice to have men overhovedet ikke need to have 
 #  lambda_true = exp(lambda_log_true)
   
   # fprintf("alpha_true: %f\n", alpha_true)
@@ -253,29 +268,69 @@ generate_one_dataset <- function(){
   #fprintf("theta_prob_true: %f\n", theta_prob_true)
   
   #simulate one dataset w N trials
-  y_sim = rbinom(n=100, size = 1, prob = theta_prob_true) #why is n = 100 and size = 1? if n is number of observations and size is number of trials?
+  y_sim = rbinom(n=N, size = 1, prob = theta_prob_true) #why is n = 100 and size = 1? if n is number of observations and size is number of trials?
   list(
     variables = list(alpha = alpha_true, b_log = b_log_true, lambda_logit = lambda_logit_true),
-    generated = list(N = 100, dBPM = deltaBPM, choice = y_sim)
+    generated = list(N = N, dBPM = deltaBPM, choice = y_sim)
   )
 }
 
 # Register the generator function
-generator <- SBC::SBC_generator_function(generate_one_dataset)
+generator <- SBC::SBC_generator_function(generate_one_dataset, N =100)
 
 # Execute simulation based calibration
 datasets <- SBC::generate_datasets(generator, n_sims = 1000)
-sbc_results <- SBC::compute_SBC(datasets, backend)
+sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+```
+```{r}
+# gem SBC object saveRDS
+getwd()
+saveRDS(sbc_results, here('SBC', 'sbc_results2.rds'))
+cat("Model fit completed and saved to:",model_file_1, "\n")
+
+#fit_bernoulli$save_object(file = model_file_bernoulli)
+
+test = readRDS(here('SBC', 'sbc_results2.rds'))
+```
+
+# Check diagnostics 
+
+```{r}
+sbc_results # to get an overview # same as summary(sbc_results)
+
+# no divergent transitions
+# rhat is ok
+# ess_bulk and ss_tail are good too
+sbc_results$backend_diagnostics
+
+hist(sbc_results$stats$rhat)
 ```
 
 ```{r}
-sbc_results$default_diagnostics
+diagnostics <- sbc_results$default_diagnostics
+diagnostics
+sbc_results$stats
+```
+
+
+```{r}
+sum(sbc_results$default_diagnostics
 sbc_results$backend_diagnostics
+sum(sbc_results$backend_diagnostics$n_divergent)
 sbc_results$warnings
-# doesn't look good - looks better after lambda transformation?
 ```
 
 ```{r}
 SBC::plot_rank_hist(sbc_results)
 ```
+```{r}
+# parameter recovery 
+SBC::plot_sim_estimated(sbc_results)
+```
+
+next steps:
+- hierarkisk - group mean og between subject variance (ikke kig så meget på subject level)
+- eller psyk + confidence 
+
+
 
