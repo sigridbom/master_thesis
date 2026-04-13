@@ -52,7 +52,7 @@ beta = 15
 N = 100 # number of trials
 
 # simlate data
-sim_data = data.frame(deltaBPM = rnorm(N,0,10), subject = 1) %>% mutate(trial = 1:n()) # notice sampling from normal distr
+sim_data = data.frame(deltaBPM = rnorm(N,alpha,2*beta), subject = 1) %>% mutate(trial = 1:n()) # notice sampling from normal distr
 # also too many trials compared to my set-up
 
 # generate probability of answering 1, faster based on psychometric function
@@ -117,7 +117,123 @@ time_equal <- end_time - start_time
 print(time_equal)
 # Time difference of 
 ```
-Status: it runs - maybe? get plots
+
+
+```{r}
+# 1. Check for Divergent Transitions
+diagnostics <- fit$diagnostic_summary()
+cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collapse = ", "), "\n")
+```
+
+```{r}
+# 2. Check R-hat and ESS metrics
+fit_summary <- fit$summary(variables = c("alpha", "beta", "lambda"))
+fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
+```
+
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "alpha") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "alpha", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - beta
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "beta") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "beta", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - lambda
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "lambda") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "lambda", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+
+
+```{r}
+# 4a. Look at the Posterior Estimate - alpha
+ggplot(draws_df) +
+  geom_density(aes(alpha, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(alpha_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = alpha, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Alpha (threshold)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "alpha  (threshold)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+
+```{r}
+# 4b. Look at the Posterior Estimate - beta
+ggplot(draws_df) +
+  geom_density(aes(beta, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(beta_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = beta, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Beta (slope)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "beta (slope)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+```{r}
+# 4c. Look at the Posterior Estimate - lambda
+ggplot(draws_df) +
+  geom_density(aes(lambda, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(lambda_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = lambda, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Lambda (lapserate)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "lambda (lapserate)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+
 
 ```{r}
 fit$cmdstan_diagnose() # no problems detected

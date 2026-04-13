@@ -1,0 +1,155 @@
+---
+title: "hierarchical hrd model"
+author: "Sigrid Bom"
+date: "2026-04-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# functions
+
+# probit regression - psychometric function
+ probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+ }
+
+probit_regression_hier <- function(deltaBPM, mu_alpha, mu_beta, mu_lambda) {
+  mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2))))
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+ }
+
+
+# inverse logit
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+```
+
+Each agent j {1, ..., J} has an unobserved parameter \theta_j on each trial i, which decides the choice _h_ of agent j on each trial i.
+
+The theta parameter is found through a probit regression, which depends on several parameters including the stimulus level (delta BPM, x), the threshold (alpha), the slope (beta) and the lapse rate (lambda). All the parameters which are used to calculate theta are population level parameters, which means that they are drawn from a distrubition with a mean (mu) and standard deviation (sigma).
+
+$$
+h_i,_j \sim Bernoulli (\theta_i) \\
+ \theta_i = \lambda + (1-2*\lambda)*(0.5+0.5*erf(\frac{x-\alpha}{\beta*\sqrt{2}}))
+$$
+The latent parameters are thought to be distributed as follows:
+$$
+\alpha_j \sim Normal(\mu_\alpha, \sigma_\alpha) \\
+\beta log_j \sim Normal(\mu_\beta, \sigma_\beta) \\
+\lambda  logit_j \sim Normal (\mu_\lambda, \sigma_\lambda)
+$$
+Overview of hyperparameters:
+$$
+\mu_\alpha \sim Normal(-10,10) \\
+\sigma_\alpha \sim Exponential(?) \\
+
+\mu_\beta log \sim Normal(2.4),0.4) \\
+\sigma_\beta log \sim Exponential(?)\\
+
+\mu_\lambda logit \sim Normal(-3,0.4) \\
+\sigma_\lambda logit \sim Exponential(?) \\
+$$
+
+Because beta needs to be positive, we sample it in the logarithmic space and then transform it back after sampling by exponentiating it. 
+Similarly, we want lambda to be a small positive number, so we take the inverse logit of lambda and multiply is by 0.05.
+
+Transformed parameters:
+$$
+\beta_j = exp(\beta log_j) \\
+\lambda_j = 0.5* \frac{1}{(1+exp(-\lambda logit_j))}
+$$
+
+# 1. Generating model
+
+```{r}
+simulate_hierarchical_hrd_data <- function(n_agents = 60,
+                                           n_trials = 40,
+                                           mu_alpha = NULL,
+                                           sigma_alpha = NULL,
+                                           mu_b_log = NULL,
+                                           sigma_b_log = NULL,
+                                           mu_lambda_logit = NULL,
+                                           sigma_lambda_logit = NULL,
+                                           seed = NULL){
+  if (!is.null(seed)) set.seed(seed)
+      
+  # 1. sample population hyperparameters (if not provided)
+  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 10)
+  if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/8)
+  
+  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4)
+  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.3)
+  
+  if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4)
+  if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.3)
+  
+  mu_beta = exp(mu_b_log)
+  # sigma_beta? 
+  mu_lambda = 0.5*inv_logit(mu_lambda_logit)
+  # sigma_lambda?
+  
+  # 2. sample stim (delta BPM)
+  deltaBPM = rnorm(n_trials, mu_alpha, 2*mu_beta) # is it a bad thing to depend the stimuli on the sampled parameters?
+  
+  # 2.5 create df
+  
+  df <- expand_grid(
+    subject_id = 1:n_agents,
+    trial = 1:n_trials
+  )
+  
+  # 3. sample individual latent parameters and theta
+  results <- df %>% 
+    group_by(subject_id) %>% 
+    arrange(trial, .by_group = TRUE) %>% 
+    mutate(
+      deltaBPM = rnorm(n_trials, mu_alpha, 2*mu_beta),
+      theta = map_dbl(deltaBPM, probit_regression_hier)
+    )
+  
+  # for (j in 1:n_agents){
+  #   agent_id. = j
+  #   print(j)
+  #   trial = 1:n_trials
+  #   for (i in 1:n_trials){
+  #     #fprint("trial no &d", i)
+  #     cat("trial no", i)
+  #     theta[i] = mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2)))) 
+  #     print(theta[i])
+  #     # or should this be rbinom(mu_lambda, sigma_lambda)?
+  #     
+  #     
+    }
+  }
+  
+  
+  
+  # 
+  # agent_params <- tibble(
+  #   agent_id = 1:n_agents,
+    # n_trials = n_trials#,
+  #  theta = mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2)))) # or should this be rbinom(mu_lambda, sigma_lambda)?
+  )
+  
+  # 4. generate observed data
+  #sim_data <- for (i in 1:n_agents){
+    
+  #}
+ return(agent_params) 
+}
+
+```
+
+
+
+```{r}
+test = simulate_hierarchical_hrd_data()
+test
+```
+

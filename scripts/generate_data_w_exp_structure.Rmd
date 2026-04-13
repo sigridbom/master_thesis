@@ -1,0 +1,12 @@
+---
+title: "generate empirical data"
+author: "Sigrid Bom"
+date: "2026-03-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+

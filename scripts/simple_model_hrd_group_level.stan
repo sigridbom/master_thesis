@@ -13,11 +13,7 @@
 data {
   int<lower=0> N; // n of trials
   vector[N] dBPM; // stimuli, delta beats pr minute
-  //vector[N] choice;
   array[N] int<lower=0, upper=1> choice; // decision on every trial
-  
-  //priors ?
-
 }
 
 // The parameters accepted by the model. Our model accepts alpha (logit), beta (log) and lambda (log)
@@ -75,7 +71,7 @@ generated quantities{
   real lambda_prior = exp(lambda_logit_prior);
   
   vector<lower=0, upper=1>[N] theta_prior_p;
-  
+   
   for (n in 1:N) {
     theta_prior_p[n] = lambda_prior + (1 - 2 * lambda_prior) *
                  (0.5+0.5*erf((dBPM[n] - alpha_prior) / (beta_prior*sqrt(2))));

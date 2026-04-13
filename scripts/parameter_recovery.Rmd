@@ -328,9 +328,431 @@ SBC::plot_rank_hist(sbc_results)
 SBC::plot_sim_estimated(sbc_results)
 ```
 
+## Parameter recovery group-level (simulating more than one participant)
+
+```{r}
+simulate_group_data <- function(alpha, beta, lambda, N, P) {
+  
+  map_dfr(1:P, function(s) {
+    
+    tibble(
+      deltaBPM = rnorm(N, 0, 10),
+      subject  = s,
+      trial    = 1:N
+    ) %>%
+      mutate(
+        p_faster = probit_regression(
+          x      = deltaBPM,
+          alpha  = alpha,
+          beta   = beta,
+          lambda = lambda
+        ),
+        choice = rbinom(N, 1, p_faster)
+      )
+    
+  }) %>%
+    {list(
+      N       = nrow(.),
+      S       = P,
+      subj_id = .$subject,
+      dBPM    = .$deltaBPM,
+      choice  = .$choice
+    )}
+}
+```
+
+```{r}
+
+trial_sizes <- c(50, 100)
+n_rep <- 2
+
+param_grid <- expand.grid(
+  alpha  = c(-12, -8, -4),
+  beta   = c(10, 15, 20),
+  lambda = c(0.01, 0.05),
+  N      = trial_sizes,
+  P = c(30, 60),
+  rep    = 1:n_rep
+)
+
+```
+
+```{r}
+# specify stan file path and compile model 
+
+file_group_level = file.path('simple_model_hrd_group_level.stan')
+model <- cmdstan_model(
+  file_group_level)#, 
+#  cpp_options = list(stan_threads = FALSE), # enable threading - don't know what this means
+#  stanc_options = list("O1")) # basic optimization - don't know how
+```
+
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+results <- vector("list", nrow(param_grid))
+
+for (i in seq_len(nrow(param_grid))) {
+  
+  cat("Running simulation", i, "of", nrow(param_grid), "\n")
+  
+  pars <- param_grid[i,]
+  
+  stan_data <- simulate_group_data(
+    alpha  = pars$alpha,
+    beta   = pars$beta,
+    lambda = pars$lambda,
+    N      = pars$N,
+    P      = pars$P
+  )
+  
+  fit <- model$sample(
+    data = stan_data,
+    seed = 123,
+    chains = 4,
+    parallel_chains = 4,
+    iter_warmup = 1000,
+    iter_sampling = 4000,
+    show_messages = FALSE,
+    refresh = 0
+  )
+  
+  #post <- fit$summary()
+  draws_rec <- as_draws_df(fit$draws()) # same thing as running fit$summary() and getting the mean
+  
+  results[[i]] <- tibble(
+    alpha_true  = pars$alpha,
+    beta_true   = pars$beta,
+    lambda_true = pars$lambda,
+    N           = pars$N,
+    P           = pars$P,
+    rep         = pars$rep,
+    alpha_est   = mean(draws_rec$alpha),
+    beta_est    = mean(draws_rec$beta),
+    lambda_est  = mean(draws_rec$lambda)
+  )
+}
+
+recovery_results <- bind_rows(results)
+```
+
+SBC version
+
+```{r}
+# Define the model
+file = file.path('simple_model_hrd_group_level.stan')
+model <- cmdstan_model(file)
+
+# Define the backend engine
+backend <- SBC::SBC_backend_cmdstan_sample(
+  model,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 0
+)
+
+# --- GROUP SETTINGS ---
+S <- 50      # number of participants per group dataset
+N <- 100     # trials per participant
+# total trials per dataset = S * N
+
+# Define the generator
+generate_group_dataset <- function(S, N){
+
+  #parameters shared across all participants
+  alpha_true = rnorm(n = 1, mean = -10, sd = 10) # kør bredere SD
+  b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.4)
+  beta_true = exp(b_log_true)
+  lambda_logit_true = rnorm(n = 1, mean = -3, sd = 0.4)
+  lambda_true= 0.5*inv_logit(lambda_logit_true)
+  
+  # storage
+  dBPM_all <- numeric(S*N)
+  choice_all <- integer(S*N)
+
+  idx <- 1
+
+  for (s in 1:S) {
+    # stimuli per participant
+    deltaBPM <- rnorm(N, alpha_true, 2*beta_true)
+
+    # choice probability
+    theta_prob <- probit_regression(
+      x = deltaBPM,
+      alpha = alpha_true,
+      beta = beta_true,
+      lambda = lambda_true
+    )
+
+    # simulate binary choices
+    y_sim <- rbinom(N, size = 1, prob = theta_prob)
+
+    # place in joint data vector
+    dBPM_all[idx:(idx+N-1)] <- deltaBPM
+    choice_all[idx:(idx+N-1)] <- y_sim
+    idx <- idx + N
+  }
+
+  list(
+    variables = list(
+      alpha = alpha_true,
+      b_log = b_log_true,
+      lambda_logit = lambda_logit_true
+    ),
+    generated = list(
+      N = S*N,
+      dBPM = dBPM_all,
+      choice = choice_all
+    )
+  )
+}
+
+
+# Register generator
+generator <- SBC::SBC_generator_function(
+  generate_group_dataset,
+  S = S,
+  N = N
+)
+
+# Run SBC
+datasets <- SBC::generate_datasets(generator, n_sims = 100)
+sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+```
+
+```{r}
+# gem SBC object saveRDS
+# for saving stan results
+model_file_2 <- here("..", "stan_results", "01_simpleHRD_group_level.rds")
+saveRDS(sbc_results, here('SBC', 'sbc_results_group.rds'))
+cat("Model fit completed and saved to:",model_file_2, "\n")
+
+#fit_bernoulli$save_object(file = model_file_bernoulli)
+
+#sbc_results = readRDS(here('SBC', 'sbc_results_group.rds'))
+```
+
+# Check diagnostics 
+
+```{r}
+sbc_results # to get an overview # same as summary(sbc_results)
+
+# no divergent transitions
+# rhat is ok
+# ess_bulk and ss_tail are good too
+sbc_results$backend_diagnostics
+
+hist(sbc_results$stats$rhat)
+```
+
+```{r}
+# parameter recovery 
+SBC::plot_sim_estimated(sbc_results)
+```
+
+```{r}
+# sbc
+SBC::plot_rank_hist(sbc_results)
+```
+
 next steps:
 - hierarkisk - group mean og between subject variance (ikke kig så meget på subject level)
 - eller psyk + confidence 
 
+
+# Hierarkisk model
+
+```{r}
+# Define the model
+file = file.path('simple_model_hrd_hierarchical.stan')
+model <- cmdstan_model(file)
+
+# Define the backend engine
+backend <- SBC::SBC_backend_cmdstan_sample(
+  model,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 0
+)
+
+# --- GROUP SETTINGS ---
+S <- 50      # number of participants per group dataset
+N <- 100     # trials per participant
+# total trials per dataset = S * N
+
+generate_hier_group_dataset <- function(S, N){
+
+  # population-level parameters
+  mu_alpha <- rnorm(1, -10, 10)
+  mu_b_log <- rnorm(1, 2.5, 0.4)
+  mu_lambda_logit <- rnorm(1, -3, 0.4)
+
+  sigma_alpha <- abs(rnorm(1, 3, 1))
+  sigma_b_log <- abs(rnorm(1, 0.3, 0.1))
+  sigma_lambda_logit <- abs(rnorm(1, 0.3, 0.1))
+
+  # storage
+  dBPM_all <- numeric(S * N)
+  choice_all <- integer(S * N)
+  subj_all <- integer(S * N)
+
+  idx <- 1
+
+  for (s in 1:S) {
+
+    # subject-level parameters
+    alpha <- rnorm(1, mu_alpha, sigma_alpha)
+    b_log_subj <- rnorm(1, mu_b_log, sigma_b_log)
+    beta <- exp(b_log_subj)
+
+    lambda_logit_subj <- rnorm(1, mu_lambda_logit, sigma_lambda_logit)
+    lambda <- 0.5 * inv_logit(lambda_logit_subj)
+
+    # stimuli depend on subject-level parameters (as before)
+    deltaBPM <- rnorm(N, alpha, 2 * beta)
+
+    theta_prob <- probit_regression(
+      x = deltaBPM,
+      alpha = alpha,
+      beta = beta,
+      lambda = lambda
+    )
+
+    y_sim <- rbinom(N, 1, theta_prob)
+
+    # store
+    dBPM_all[idx:(idx+N-1)] <- deltaBPM
+    choice_all[idx:(idx+N-1)] <- y_sim
+    subj_all[idx:(idx+N-1)] <- s
+
+    idx <- idx + N
+  }
+
+  list(
+    variables = list(
+      mu_alpha = mu_alpha,
+      mu_b_log = mu_b_log,
+      mu_lambda_logit = mu_lambda_logit,
+      sigma_alpha = sigma_alpha,
+      sigma_b_log = sigma_b_log,
+      sigma_lambda_logit = sigma_lambda_logit
+    ),
+    generated = list(
+      N = S * N,
+      S = S,
+      dBPM = dBPM_all,
+      choice = choice_all,
+      subj = subj_all
+    )
+  )
+}
+
+# Register generator
+generator <- SBC::SBC_generator_function(
+  generate_hier_group_dataset,
+  S = S,
+  N = N
+)
+
+# Run SBC
+datasets <- SBC::generate_datasets(generator, n_sims = 10)
+sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+```
+
+
+
+
+```{r}
+# Define the generator
+generate_group_dataset <- function(S, N){
+
+  #parameters shared across all participants
+  alpha_true = rnorm(n = 1, mean = -10, sd = 10) # kør bredere SD
+  b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.4)
+  beta_true = exp(b_log_true)
+  lambda_logit_true = rnorm(n = 1, mean = -3, sd = 0.4)
+  lambda_true= 0.5*inv_logit(lambda_logit_true)
+  
+  # storage
+  dBPM_all <- numeric(S*N)
+  choice_all <- integer(S*N)
+
+  idx <- 1
+
+  for (s in 1:S) {
+    # stimuli per participant
+    deltaBPM <- rnorm(N, alpha_true, 2*beta_true)
+
+    # choice probability
+    theta_prob <- probit_regression(
+      x = deltaBPM,
+      alpha = alpha_true,
+      beta = beta_true,
+      lambda = lambda_true
+    )
+
+    # simulate binary choices
+    y_sim <- rbinom(N, size = 1, prob = theta_prob)
+
+    # place in joint data vector
+    dBPM_all[idx:(idx+N-1)] <- deltaBPM
+    choice_all[idx:(idx+N-1)] <- y_sim
+    idx <- idx + N
+  }
+
+  list(
+    variables = list(
+      alpha = alpha_true,
+      b_log = b_log_true,
+      lambda_logit = lambda_logit_true
+    ),
+    generated = list(
+      N = S*N,
+      dBPM = dBPM_all,
+      choice = choice_all
+    )
+  )
+}
+
+
+# Register generator
+generator <- SBC::SBC_generator_function(
+  generate_group_dataset,
+  S = S,
+  N = N
+)
+
+# Run SBC
+datasets <- SBC::generate_datasets(generator, n_sims = 100)
+sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+```
+
+```{r}
+# gem SBC object saveRDS
+# for saving stan results
+model_file_2 <- here("..", "stan_results", "01_simpleHRD_group_level.rds")
+saveRDS(sbc_results, here('SBC', 'sbc_results_group.rds'))
+cat("Model fit completed and saved to:",model_file_2, "\n")
+
+#fit_bernoulli$save_object(file = model_file_bernoulli)
+
+#sbc_results = readRDS(here('SBC', 'sbc_results_group.rds'))
+```
+
+# Check diagnostics 
+
+```{r}
+sbc_results # to get an overview # same as summary(sbc_results)
+
+# no divergent transitions
+# rhat is ok
+# ess_bulk and ss_tail are good too
+sbc_results$backend_diagnostics
+
+hist(sbc_results$stats$rhat)
+```
 
 
