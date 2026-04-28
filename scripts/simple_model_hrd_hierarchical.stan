@@ -15,18 +15,18 @@ data {
   int<lower=0> S;                        // number of participants
   vector[N] dBPM;                        // stimuli, delta beats pr minute
   array[N] int<lower=0, upper=1> choice; // decision on every trial
-  array[N] int<lower=1, upper=S> subj;   // participant index for each trial
+  array[N] int<lower=1, upper=S> subj;   // participant index for each trial 
   
 }
 
-// The parameters accepted by the model. Our model accepts alpha (logit), beta (log) and lambda (log)
+// The parameters accepted by the model. Our model accepts alpha (logit), beta (log) and lambda (logit)
 parameters {
   // population level paramters
   real mu_alpha;              // threshold mean 
   real <lower=0> sigma_alpha; // threshold SD
   
   real mu_b_log;              // slope mean
-  real sigma_b_log;           // slope SD
+  real <lower=0>sigma_b_log;           // slope SD
   real mu_lambda_logit;          // lapse rate mean
   real <lower=0> sigma_lambda_logit; // lapse rate SD
   
@@ -46,12 +46,15 @@ transformed parameters{
     vector[S] beta;
     vector[S] lambda;
 
+// non-centeret parameterization?
     for (s in 1:S) {
       alpha[s] = mu_alpha + sigma_alpha * alpha_subj[s];
       beta[s]  = exp(mu_b_log + sigma_b_log * b_log_subj[s]);
       lambda[s] = 0.5 * inv_logit(mu_lambda_logit + sigma_lambda_logit * lambda_logit_subj[s]);
   }
 }
+
+
 
 // The model to be estimated. We model the output
 // 'y' to be normally distributed with mean 'mu'
@@ -60,18 +63,16 @@ model {
   vector[N] theta; // stan doesn't allow constraints of parameters in model block (removed 0-1) - should this be in the data section?
 
   // population-level priors
-  // population-level priors
-
-  target += normal_lpdf(mu_alpha| -10, 10); 
-  target += exponential_lpdf(sigma_alpha|1);
+  target += normal_lpdf(mu_alpha| -10, 7); 
+  target += exponential_lpdf(sigma_alpha|10);
   
   target += normal_lpdf(mu_b_log | 2.5, .4); 
-  target += exponential_lpdf(sigma_b_log | 1);
+  target += exponential_lpdf(sigma_b_log | 0.4);
   
   target += normal_lpdf(mu_lambda_logit | -3, .4);
-  target += exponential_lpdf(sigma_lambda_logit | 1);
+  target += exponential_lpdf(sigma_lambda_logit | 0.4);
 
-  // subject-level priors
+  // subject-level priors - er det rigtigt???
   alpha_subj        ~ normal(0, 1);
   b_log_subj        ~ normal(0, 1);
   lambda_logit_subj ~ normal(0, 1);
@@ -96,62 +97,46 @@ model {
 
 generated quantities{
   // generate priors for visualization
-  
-  vector[N] theta_rep;
+
+  // --- POPULATION LEVEL PRIORS ---
+  real mu_alpha_prior         = normal_rng(-10, 7);
+  real sigma_alpha_prior      = exponential_rng(10);
+  real mu_b_log_prior         = normal_rng(2.5, 0.4);
+  real sigma_b_log_prior      = exponential_rng(0.4);
+  real mu_lambda_logit_prior  = normal_rng(-3, 0.4);
+  real sigma_lambda_logit_prior = exponential_rng(0.4);
+
+  // --- SUBJECT LEVEL PRIORS ---
+  // sample one "prior subject" from the prior predictive population
+  vector[S] alpha_prior;
+  vector[S] beta_prior;
+  vector[S] lambda_prior;
+
+  for (s in 1:S) {
+    real alpha_subj_prior        = normal_rng(0, 1);
+    real b_log_subj_prior        = normal_rng(0, 1);
+    real lambda_logit_subj_prior = normal_rng(0, 1);
+
+    alpha_prior[s]  = mu_alpha_prior + sigma_alpha_prior * alpha_subj_prior;
+    beta_prior[s]   = exp(mu_b_log_prior + sigma_b_log_prior * b_log_subj_prior);
+    lambda_prior[s] = 0.5 * inv_logit(mu_lambda_logit_prior + sigma_lambda_logit_prior * lambda_logit_subj_prior);
+  }
+
+  // --- PRIOR PREDICTIVE THETA ---
+  vector[N] theta_prior_p;
 
   for (n in 1:N) {
     int s = subj[n];
-    theta_rep[n] = lambda[s] +
-                   (1 - 2 * lambda[s]) *
-                   (0.5 + 0.5 * erf((dBPM[n] - alpha[s])/(beta[s]*sqrt(2))));
+    theta_prior_p[n] = lambda_prior[s] + (1 - 2 * lambda_prior[s]) *
+                       (0.5 + 0.5 * erf((dBPM[n] - alpha_prior[s]) / (beta_prior[s] * sqrt(2))));
+  }
+
+  // --- POSTERIOR PREDICTIVE THETA ---
+  vector[N] theta_p;
+
+  for (n in 1:N) {
+    int s = subj[n];
+    theta_p[n] = lambda[s] + (1 - 2 * lambda[s]) *
+                 (0.5 + 0.5 * erf((dBPM[n] - alpha[s]) / (beta[s] * sqrt(2))));
   }
 }
-// }
-//   
-//   real alpha_prior;
-//   real b_log_prior;
-//   real lambda_logit_prior;
-// 
-//   alpha_prior = normal_rng(-10, 10);
-//   b_log_prior       = normal_rng(2.5, 0.4);
-//   lambda_logit_prior  = normal_rng(-3, 0.4);
-//   
-//   // trying non-informed priors - did not improve things
-//   //alpha_prior = beta(1,1);
-//   //b_log_prior = beta(1,1);
-//   //lambda_log_prior = beta(1,1);
-//   
-//   real beta_prior = exp(b_log_prior);
-//   real lambda_prior = exp(lambda_logit_prior);
-//   
-//   vector<lower=0, upper=1>[N] theta_prior_p;
-//    
-//   for (n in 1:N) {
-//     theta_prior_p[n] = lambda_prior + (1 - 2 * lambda_prior) *
-//                  (0.5+0.5*erf((dBPM[n] - alpha_prior) / (beta_prior*sqrt(2))));
-//   }
-//   
-//   // generate model predictions given the data for posterior predictive checks
-//   vector<lower=0, upper=1>[N] theta_p;
-//   
-//   for (n in 1:N) {
-//     theta_p[n] = lambda + (1 - 2 * lambda) *
-//                  (0.5+0.5*erf((dBPM[n] - alpha) / (beta*sqrt(2))));
-//   }
-// }  
-  // generate model predictions given only the priors for prior predictive checks
-  // generate log_likehood estimates for model comparison
-
-  //test
- // vector[N] theta;
-//  array[N] int y_rep;
-//  vector[N] log_lik;
-
-  // recompute choice probabilities
-//  theta = lambda + (1 - 2 * lambda) *
-//          Phi((dBPM - alpha) / beta);
-
-//  for (n in 1:N) {
-//    y_rep[n] = bernoulli_rng(theta[n]);
-//    log_lik[n] = bernoulli_lpmf(choice[n] | theta[n]);
- // }

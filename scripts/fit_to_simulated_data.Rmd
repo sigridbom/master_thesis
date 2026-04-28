@@ -27,8 +27,6 @@ pacman::p_load(
 ```
 
 ```{r}
-# functions
-
 # probit regression - psychometric function
  probit_regression <- function(x, alpha, beta, lambda) {
   lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))

@@ -9,6 +9,19 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+
+```{r load packages}
+pacman::p_load(
+  tidyverse,
+  here,
+  posterior,
+  cmdstanr,
+  brms, tidybayes, future, purrr, furrr, prettydoc, patchwork, stringr, ggpubr,
+  pracma, dplyr
+  )
+```
+
+
 ```{r}
 # functions
 
@@ -16,12 +29,6 @@ knitr::opts_chunk$set(echo = TRUE)
  probit_regression <- function(x, alpha, beta, lambda) {
   lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
  }
-
-probit_regression_hier <- function(deltaBPM, mu_alpha, mu_beta, mu_lambda) {
-  mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2))))
-  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
- }
-
 
 # inverse logit
 inv_logit<-function(x){
@@ -46,18 +53,18 @@ $$
 $$
 Overview of hyperparameters:
 $$
-\mu_\alpha \sim Normal(-10,10) \\
-\sigma_\alpha \sim Exponential(?) \\
+\mu_\alpha \sim Normal(-10,7) \\
+\sigma_\alpha \sim Exponential(10) \\
 
-\mu_\beta log \sim Normal(2.4),0.4) \\
-\sigma_\beta log \sim Exponential(?)\\
+\mu_\beta log \sim Normal(2.5,0.4) \\
+\sigma_\beta log \sim Exponential(0.4)\\
 
 \mu_\lambda logit \sim Normal(-3,0.4) \\
-\sigma_\lambda logit \sim Exponential(?) \\
+\sigma_\lambda logit \sim Exponential(0.4) \\
 $$
 
 Because beta needs to be positive, we sample it in the logarithmic space and then transform it back after sampling by exponentiating it. 
-Similarly, we want lambda to be a small positive number, so we take the inverse logit of lambda and multiply is by 0.05.
+Similarly, we want lambda to be a small positive number, so we take the inverse logit of lambda and multiply it by 0.5.
 
 Transformed parameters:
 $$
@@ -76,80 +83,254 @@ simulate_hierarchical_hrd_data <- function(n_agents = 60,
                                            sigma_b_log = NULL,
                                            mu_lambda_logit = NULL,
                                            sigma_lambda_logit = NULL,
-                                           seed = NULL){
-  if (!is.null(seed)) set.seed(seed)
-      
+                                           seed = NULL
+                                           ){
+ 
+  if (!is.null(seed)) set.seed(seed)    
+  
   # 1. sample population hyperparameters (if not provided)
-  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 10)
-  if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/8)
+  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 7) # skal outputte omkring -10
+  if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/10) # skal outputte omkring 10
   
-  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4)
-  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.3)
+  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5
+  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.4) # skal outputte omrking 0.4
   
-  if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4)
-  if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.3)
+  if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4) # skal være omrking -3
+  if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.4) #skal outputte omkring 0.4
   
-  mu_beta = exp(mu_b_log)
-  # sigma_beta? 
-  mu_lambda = 0.5*inv_logit(mu_lambda_logit)
-  # sigma_lambda?
+  # 1.5 sample individual parameter values using hyper parameter values from population level
   
-  # 2. sample stim (delta BPM)
-  deltaBPM = rnorm(n_trials, mu_alpha, 2*mu_beta) # is it a bad thing to depend the stimuli on the sampled parameters?
+  data_sim = map_dfr(1:n_agents, ~ {
+    # 1. sample true parameters per agent
+    alpha         <- rnorm(1, mu_alpha, sigma_alpha)
+    b_log         <- rnorm(1, mu_b_log, sigma_b_log)
+    beta          <- exp(b_log)
+    lambda_logit <- rnorm(1, mu_lambda_logit, sigma_lambda_logit)
+    lambda       <- 0.5 * inv_logit(lambda_logit)
   
-  # 2.5 create df
+    # 2. sample stim
+    deltaBPM <- rnorm(n_trials, alpha, 2 * beta) # is it a bad thing to depend the stimuli on the sampled parameters? also should this be different for each participant like it is now?
   
-  df <- expand_grid(
-    subject_id = 1:n_agents,
-    trial = 1:n_trials
-  )
+    # 3. calculate theta and choice
+    theta_list <- probit_regression(x = deltaBPM, alpha = alpha, beta = beta, lambda = lambda)
+    choice = rbinom(n=n_trials, size = 1, prob = theta_list) 
   
-  # 3. sample individual latent parameters and theta
-  results <- df %>% 
-    group_by(subject_id) %>% 
-    arrange(trial, .by_group = TRUE) %>% 
-    mutate(
-      deltaBPM = rnorm(n_trials, mu_alpha, 2*mu_beta),
-      theta = map_dbl(deltaBPM, probit_regression_hier)
+    # 4. return a tibble for each agent
+    tibble(
+      n_agent   = .x,
+      alpha,
+      mu_alpha,
+      sigma_alpha,
+      beta,
+      mu_b_log,
+      sigma_b_log,
+      lambda,
+      mu_lambda_logit,
+      sigma_lambda_logit,
+      deltaBPM,
+      theta = theta_list,
+      choice
     )
+})
   
-  # for (j in 1:n_agents){
-  #   agent_id. = j
-  #   print(j)
-  #   trial = 1:n_trials
-  #   for (i in 1:n_trials){
-  #     #fprint("trial no &d", i)
-  #     cat("trial no", i)
-  #     theta[i] = mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2)))) 
-  #     print(theta[i])
-  #     # or should this be rbinom(mu_lambda, sigma_lambda)?
-  #     
-  #     
-    }
-  }
-  
-  
-  
-  # 
-  # agent_params <- tibble(
-  #   agent_id = 1:n_agents,
-    # n_trials = n_trials#,
-  #  theta = mu_lambda + (1-2*mu_lambda)*(0.5+0.5*erf((deltaBPM - mu_alpha)/(mu_beta*sqrt(2)))) # or should this be rbinom(mu_lambda, sigma_lambda)?
-  )
-  
-  # 4. generate observed data
-  #sim_data <- for (i in 1:n_agents){
-    
-  #}
- return(agent_params) 
+ return(data_sim) 
 }
 
 ```
 
 
+```{r}
+# need to set seed to get same response every time
+hier_data = simulate_hierarchical_hrd_data(seed = 123) 
+
+hier_data
+```
+
 
 ```{r}
-test = simulate_hierarchical_hrd_data()
-test
+hier_data %>% 
+  ggplot() +
+  aes(x =  hier_data$alpha_true) + geom_histogram()
+
+ hier_data %>% 
+  ggplot() +
+  aes(x =  hier_data$beta_true) + geom_histogram()
+
+ hier_data %>% 
+  ggplot() +
+  aes(x =  hier_data$lambda_true) + geom_histogram()
 ```
+
+2. Compile stan model and make data stan friendly
+
+```{r}
+file = file.path('simple_model_hrd_hierarchical.stan')
+model <- cmdstan_model(
+  file)
+```
+```{r}
+# make data stan friendly i.e. in list form 
+hier_stan_data <- list(
+  N = nrow(hier_data),
+  S = 60,
+  subj = hier_data$n_agent,
+  dBPM = hier_data$deltaBPM,
+  choice = hier_data$choice
+)
+
+str(hier_stan_data)
+```
+
+3. Sample
+
+```{r}
+
+start_time <- Sys.time()
+
+fit <- model$sample(
+  data = hier_stan_data,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  #threads_per_chain = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 500#,
+ # show_messages= FALSE
+)
+
+end_time <- Sys.time()
+time_equal <- end_time - start_time
+print(time_equal)
+# Time difference of 
+```
+
+# Diagnostics check
+
+```{r}
+# 1. Check for Divergent Transitions
+diagnostics <- fit$diagnostic_summary()
+cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collapse = ", "), "\n")
+```
+
+```{r}
+# 2. Check R-hat and ESS metrics
+fit_summary <- fit$summary(variables = c("alpha", "beta", "lambda"))
+fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
+```
+
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "mu_alpha") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "mu_alpha", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "mu_b_log") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "mu_b_log", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "mu_lambda_logit") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "mu_lambda_logit", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 4a. Look at the Posterior Estimate - alpha
+ggplot(draws_df) +
+  geom_density(aes(mu_alpha, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(mu_alpha_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = hier_data$mu_alpha, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: mu_alpha (threshold)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "alpha  (threshold)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+```{r}
+# 4b. Look at the Posterior Estimate - beta - tror noget går galt her
+ggplot(draws_df) +
+  geom_density(aes(exp(mu_b_log), fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(exp(mu_b_log_prior), fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = exp(hier_data$mu_b_log), linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Beta (slope)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "beta (slope)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+
+```{r}
+# 4c. Look at the Posterior Estimate - lambda
+ggplot(draws_df) +
+  geom_density(aes(inv_logit(mu_lambda_logit), fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(inv_logit(mu_lambda_logit_prior), fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = inv_logit(hier_data$mu_lambda_logit), linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Lambda (lapserate)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "lambda (lapserate)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+
+# OTHER notes below
+
+
+```{r}
+# purrr version
+#theta_list <- map_dbl(deltaBPM, ~ probit_regression(x = .x, alpha = alpha_true, beta = beta_true, lambda=lambda_true))
+
+# which is actually the same as
+#theta_list2 <-probit_regression(x = deltaBPM, alpha = alpha_true, beta = beta_true, lambda=lambda_true)
+
+```
+
+
 
