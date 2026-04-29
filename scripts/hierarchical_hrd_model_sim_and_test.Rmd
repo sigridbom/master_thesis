@@ -2,7 +2,10 @@
 title: "hierarchical hrd model"
 author: "Sigrid Bom"
 date: "2026-04-13"
-output: html_document
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -17,7 +20,7 @@ pacman::p_load(
   posterior,
   cmdstanr,
   brms, tidybayes, future, purrr, furrr, prettydoc, patchwork, stringr, ggpubr,
-  pracma, dplyr
+  pracma, dplyr, tinytex
   )
 ```
 
@@ -89,11 +92,11 @@ simulate_hierarchical_hrd_data <- function(n_agents = 60,
   if (!is.null(seed)) set.seed(seed)    
   
   # 1. sample population hyperparameters (if not provided)
-  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 7) # skal outputte omkring -10
+  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -8, sd = 7) # skal outputte omkring -10 
   if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/10) # skal outputte omkring 10
   
-  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5
-  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.4) # skal outputte omrking 0.4
+  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5 
+  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.4) # skal outputte omrking 0.4 
   
   if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4) # skal være omrking -3
   if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.4) #skal outputte omkring 0.4
@@ -150,15 +153,15 @@ hier_data
 ```{r}
 hier_data %>% 
   ggplot() +
-  aes(x =  hier_data$alpha_true) + geom_histogram()
+  aes(x =  alpha) + geom_histogram()
 
  hier_data %>% 
   ggplot() +
-  aes(x =  hier_data$beta_true) + geom_histogram()
+  aes(x =  beta) + geom_histogram()
 
  hier_data %>% 
   ggplot() +
-  aes(x =  hier_data$lambda_true) + geom_histogram()
+  aes(x =  lambda) + geom_histogram()
 ```
 
 2. Compile stan model and make data stan friendly
@@ -204,6 +207,13 @@ time_equal <- end_time - start_time
 print(time_equal)
 # Time difference of 
 ```
+
+# save results
+```{r}
+saveRDS(fit, file = "../stan_results/hier_hrd_model_alpha_sd_7_beta_lambda_sd_0_4.rds")
+#test <- readRDS("../stan_results/hier_hrd_model_alpha_sd_10_beta_lambda_sd_0_5.rds")
+```
+
 
 # Diagnostics check
 
@@ -294,7 +304,7 @@ ggplot(draws_df) +
   geom_vline(xintercept = exp(hier_data$mu_b_log), linetype = "dashed", color = "black", linewidth = 1.2) +
   scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
   labs(
-    title    = "Prior-Posterior Update: Beta (slope)",
+    title    = "Prior-Posterior Update: mu_beta (slope)",
     subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
     x        = "beta (slope)",
     y        = "Density",
@@ -311,7 +321,7 @@ ggplot(draws_df) +
   geom_vline(xintercept = inv_logit(hier_data$mu_lambda_logit), linetype = "dashed", color = "black", linewidth = 1.2) +
   scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
   labs(
-    title    = "Prior-Posterior Update: Lambda (lapserate)",
+    title    = "Prior-Posterior Update: mu_lambda (lapserate)",
     subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
     x        = "lambda (lapserate)",
     y        = "Density",

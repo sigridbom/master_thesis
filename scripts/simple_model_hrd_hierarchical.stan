@@ -26,7 +26,7 @@ parameters {
   real <lower=0> sigma_alpha; // threshold SD
   
   real mu_b_log;              // slope mean
-  real <lower=0>sigma_b_log;           // slope SD
+  real <lower=0>sigma_b_log;  // slope SD
   real mu_lambda_logit;          // lapse rate mean
   real <lower=0> sigma_lambda_logit; // lapse rate SD
   
@@ -63,7 +63,7 @@ model {
   vector[N] theta; // stan doesn't allow constraints of parameters in model block (removed 0-1) - should this be in the data section?
 
   // population-level priors
-  target += normal_lpdf(mu_alpha| -10, 7); 
+  target += normal_lpdf(mu_alpha| -8, 7); 
   target += exponential_lpdf(sigma_alpha|10);
   
   target += normal_lpdf(mu_b_log | 2.5, .4); 
@@ -80,12 +80,8 @@ model {
   // likelihood
   for (n in 1:N) {
     int s = subj[n];
-    real a = alpha[s];
-    real b = beta[s];
-    real l = lambda[s];
-
-    theta[n] = l + (1 - 2*l) *
-               (0.5 + 0.5 * erf((dBPM[n] - a)/(b*sqrt(2))));
+    theta[n] = lambda[s] + (1 - 2*lambda[s]) *
+               (0.5 + 0.5 * erf((dBPM[n] - alpha[s])/(beta[s]*sqrt(2))));
   }
 
   target += bernoulli_lpmf(choice | theta);
@@ -99,7 +95,7 @@ generated quantities{
   // generate priors for visualization
 
   // --- POPULATION LEVEL PRIORS ---
-  real mu_alpha_prior         = normal_rng(-10, 7);
+  real mu_alpha_prior         = normal_rng(-8, 7);
   real sigma_alpha_prior      = exponential_rng(10);
   real mu_b_log_prior         = normal_rng(2.5, 0.4);
   real sigma_b_log_prior      = exponential_rng(0.4);
@@ -117,6 +113,7 @@ generated quantities{
     real b_log_subj_prior        = normal_rng(0, 1);
     real lambda_logit_subj_prior = normal_rng(0, 1);
 
+  // non-centered parameterization
     alpha_prior[s]  = mu_alpha_prior + sigma_alpha_prior * alpha_subj_prior;
     beta_prior[s]   = exp(mu_b_log_prior + sigma_b_log_prior * b_log_subj_prior);
     lambda_prior[s] = 0.5 * inv_logit(mu_lambda_logit_prior + sigma_lambda_logit_prior * lambda_logit_subj_prior);

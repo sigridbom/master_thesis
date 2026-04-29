@@ -7,3 +7,8 @@
 SBC/
 rics_code/
 scripts/shiny_app.R
+.positai
+stan_results/
+scripts/hierarchical_hrd_model_sim_and_test.docx
+scripts/hierarchical_hrd_model_sim_and_test.log
+scripts/hierarchical_hrd_model_sim_and_test.tex
