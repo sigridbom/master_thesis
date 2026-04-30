@@ -12,3 +12,8 @@ stan_results/
 scripts/hierarchical_hrd_model_sim_and_test.docx
 scripts/hierarchical_hrd_model_sim_and_test.log
 scripts/hierarchical_hrd_model_sim_and_test.tex
+scripts/simple_model_hrd_hierarchical_old.stan
+document_structure.log
+document_structure.tex
+plate_model.tex
+scripts/~$erarchical_hrd_model_sim_and_test.docx

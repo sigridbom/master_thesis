@@ -20,8 +20,15 @@ pacman::p_load(
   posterior,
   cmdstanr,
   brms, tidybayes, future, purrr, furrr, prettydoc, patchwork, stringr, ggpubr,
-  pracma, dplyr, tinytex
+  pracma, dplyr, msm
   )
+```
+
+```{r}
+# add to code
+rerun_code <- FALSE
+
+# if file exists or above is true, rerun code 
 ```
 
 
@@ -92,7 +99,7 @@ simulate_hierarchical_hrd_data <- function(n_agents = 60,
   if (!is.null(seed)) set.seed(seed)    
   
   # 1. sample population hyperparameters (if not provided)
-  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -8, sd = 7) # skal outputte omkring -10 
+  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 7) # skal outputte omkring -10 
   if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/10) # skal outputte omkring 10
   
   if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5 
@@ -112,7 +119,7 @@ simulate_hierarchical_hrd_data <- function(n_agents = 60,
     lambda       <- 0.5 * inv_logit(lambda_logit)
   
     # 2. sample stim
-    deltaBPM <- rnorm(n_trials, alpha, 2 * beta) # is it a bad thing to depend the stimuli on the sampled parameters? also should this be different for each participant like it is now?
+    deltaBPM <- rtnorm(n_trials, mean = alpha, sd = 2 * beta, lower = -50, upper = 50) # truncated normal # is it a bad thing to depend the stimuli on the sampled parameters? also should this be different for each participant like it is now?
   
     # 3. calculate theta and choice
     theta_list <- probit_regression(x = deltaBPM, alpha = alpha, beta = beta, lambda = lambda)
@@ -149,6 +156,37 @@ hier_data = simulate_hierarchical_hrd_data(seed = 123)
 hier_data
 ```
 
+```{r}
+hier_data %>% 
+  ggplot() +
+  aes(deltaBPM, theta, color = n_agent) +
+  geom_jitter() +
+  labs(
+    x = "stimulus intensity",
+    y = "probability of answering 'faster'",
+    title = "HRD: simulated data for 60 agents with 40 trials"
+  ) + coord_cartesian(xlim=c(-80,80)) # obs akser
+
+```
+
+
+```{r fig.width=10, fig.height=5}
+# visualise simulated data (choices)
+
+hier_data %>% filter(n_agent %in% 1:5) %>% 
+  ggplot() +
+  aes(deltaBPM, theta, color = as.factor(n_agent)) +
+  geom_jitter() +
+  labs(
+    x = "stimulus intensity",
+    y = "probability of answering 'faster'",
+    title = "HRD: simulated data for 60 agents with 40 trials"
+  )  + facet_wrap(~n_agent) + 
+  coord_cartesian(xlim=c(-100,100)) # obs akser
+
+
+```
+
 
 ```{r}
 hier_data %>% 
@@ -171,6 +209,7 @@ file = file.path('simple_model_hrd_hierarchical.stan')
 model <- cmdstan_model(
   file)
 ```
+
 ```{r}
 # make data stan friendly i.e. in list form 
 hier_stan_data <- list(
@@ -178,7 +217,16 @@ hier_stan_data <- list(
   S = 60,
   subj = hier_data$n_agent,
   dBPM = hier_data$deltaBPM,
-  choice = hier_data$choice
+  choice = hier_data$choice,
+  prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
+  prior_mu_alpha_scale         =  7,
+  prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
+  prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
+  prior_mu_b_log_scale          =  0.4,
+  prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
+  prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+  prior_mu_lambda_logit_scale   =  0.4,
+  prior_sigma_lambda_logit_rate =  2.5    # E[sigma_lambda_logit] = 0.4
 )
 
 str(hier_stan_data)
@@ -190,14 +238,17 @@ str(hier_stan_data)
 
 start_time <- Sys.time()
 
+pf <- model$pathfinder(data = hier_stan_data, num_paths = 10, draws = 400, psis_resample=FALSE)
+
 fit <- model$sample(
   data = hier_stan_data,
+  init = pf,
   seed = 123,
   chains = 4,
   parallel_chains = 4,
   #threads_per_chain = 4,
-  iter_warmup = 1000,
-  iter_sampling = 2000,
+  iter_warmup = 500,
+  iter_sampling = 1000,
   refresh = 500#,
  # show_messages= FALSE
 )
@@ -210,8 +261,12 @@ print(time_equal)
 
 # save results
 ```{r}
-saveRDS(fit, file = "../stan_results/hier_hrd_model_alpha_sd_7_beta_lambda_sd_0_4.rds")
-#test <- readRDS("../stan_results/hier_hrd_model_alpha_sd_10_beta_lambda_sd_0_5.rds")
+#saveRDS(fit, file = "../stan_results/hier_hrd_model_alpha_sd_7_beta_lambda_sd_0_4.rds") - doesn't save chains
+#fit <- readRDS("../stan_results/hier_model_alpha_sd_10_beta_lambda_sd_0_5.rds")
+# save object 
+
+fit$save_object("../stan_results/hier_hrd_model_v2.RDS")
+#test <- readRDS("../stan_results/hier_hrd_model_v2.RDS")
 ```
 
 
