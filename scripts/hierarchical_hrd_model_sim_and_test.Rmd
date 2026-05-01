@@ -23,6 +23,11 @@ pacman::p_load(
   pracma, dplyr, msm
   )
 ```
+```{r}
+# want progress bars? 
+pacman::p_load(progressr)
+progressr::handlers(global = TRUE) # run this in the console
+```
 
 ```{r}
 # add to code
@@ -127,7 +132,8 @@ simulate_hierarchical_hrd_data <- function(n_agents = 60,
   
     # 4. return a tibble for each agent
     tibble(
-      n_agent   = .x,
+      n_agents   = .x,
+      n_trials,
       alpha,
       mu_alpha,
       sigma_alpha,
@@ -185,6 +191,93 @@ hier_data %>% filter(n_agent %in% 1:5) %>%
   coord_cartesian(xlim=c(-100,100)) # obs akser
 
 
+```
+
+# Prior predictive checks
+
+```{r}
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agents = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, alpha) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = alpha)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+ # scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - alpha",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
+
+
+# BETA
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agents = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, beta) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = beta)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+  scale_x_continuous(limits = c(0, 40)) + #, breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - beta",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
+
+
+
+# LAMBDA
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agents = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, lambda) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = lambda)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+  scale_x_continuous(limits = c(0, 0.1)) + #, breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - lambda",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
 ```
 
 
@@ -383,6 +476,266 @@ ggplot(draws_df) +
     fill     = "Distribution"
   ) +
   theme_classic()
+```
+Also need prior predictive checks. haven't made those. 
+
+# parameter recovery
+
+```{r}
+# ALPHA
+# 1. Extract the full summary (which defaults to including median, q5, and q95)
+recovery_summary <- draws_df |> 
+  posterior::subset_draws(variable = "alpha") |> 
+  posterior::summarise_draws() |> 
+  mutate(n_agent= as.integer(str_extract(variable, "(?<=\\[)\\d+(?=\\])")))
+
+# 2. Extract the true generative parameters directly from the simulated dataset
+true_agent_params <- hier_data |> 
+  distinct(n_agent, n_trials, alpha)
+
+# 3. Join the posterior estimates with the ground truth
+recovery_df <- true_agent_params |> 
+  left_join(recovery_summary, by = "n_agent")
+
+# 4. Plot Recovery with Shrinkage Dynamics
+ggplot(recovery_df, aes(x = alpha, y = median)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbar(aes(ymin = q5, ymax = q95), width = 0, alpha = 0.5, color = "steelblue") +
+  geom_point(aes(size = n_trials), color = "midnightblue", alpha = 0.8) +
+  labs(
+    title = "Parameter Recovery: Alpha",
+    subtitle = "Healthy = points near diagonal (y = x)",
+    x = "True Parameter Value",
+    y = "Posterior Median Estimate",
+    size = "Number of Trials (N_j)"
+  )
+```
+
+```{r}
+# BETA
+# 1. Extract the full summary (which defaults to including median, q5, and q95)
+recovery_summary <- draws_df |> 
+  posterior::subset_draws(variable = "beta") |> 
+  posterior::summarise_draws() |> 
+  mutate(n_agent= as.integer(str_extract(variable, "(?<=\\[)\\d+(?=\\])")))
+
+# 2. Extract the true generative parameters directly from the simulated dataset
+true_agent_params <- hier_data |> 
+  distinct(n_agent, n_trials, beta)
+
+# 3. Join the posterior estimates with the ground truth
+recovery_df <- true_agent_params |> 
+  left_join(recovery_summary, by = "n_agent")
+
+# 4. Plot Recovery with Shrinkage Dynamics
+ggplot(recovery_df, aes(x = beta, y = median)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbar(aes(ymin = q5, ymax = q95), width = 0, alpha = 0.5, color = "steelblue") +
+  geom_point(aes(size = n_trials), color = "midnightblue", alpha = 0.8) +
+  labs(
+    title = "Parameter Recovery: Beta",
+    subtitle = "Healthy = points near diagonal (y = x)",
+    x = "True Parameter Value",
+    y = "Posterior Median Estimate",
+    size = "Number of Trials (N_j)"
+  )
+```
+```{r}
+# BETA
+# 1. Extract the full summary (which defaults to including median, q5, and q95)
+recovery_summary <- draws_df |> 
+  posterior::subset_draws(variable = "lambda") |> 
+  posterior::summarise_draws() |> 
+  mutate(n_agent= as.integer(str_extract(variable, "(?<=\\[)\\d+(?=\\])")))
+
+# 2. Extract the true generative parameters directly from the simulated dataset
+true_agent_params <- hier_data |> 
+  distinct(n_agent, n_trials, lambda)
+
+# 3. Join the posterior estimates with the ground truth
+recovery_df <- true_agent_params |> 
+  left_join(recovery_summary, by = "n_agent")
+
+# 4. Plot Recovery with Shrinkage Dynamics
+ggplot(recovery_df, aes(x = lambda, y = median)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbar(aes(ymin = q5, ymax = q95), width = 0, alpha = 0.5, color = "steelblue") +
+  geom_point(aes(size = n_trials), color = "midnightblue", alpha = 0.8) +
+  labs(
+    title = "Parameter Recovery: Lambda",
+    subtitle = "Healthy = points near diagonal (y = x)",
+    x = "True Parameter Value",
+    y = "Posterior Median Estimate",
+    size = "Number of Trials (N_j)"
+  )
+```
+
+```{r}
+prep_stan_data <- function(df, agent_id) {
+  df <- df |>
+    arrange(id, t) |>
+    mutate(
+      agent_id   = as.integer(factor(id)),
+      species_id = as.integer(factor(species))
+    )
+  species_of <- df |> distinct(agent_id, species_id) |>
+    arrange(agent_id) |> pull(species_id)
+  boundaries <- df |>
+    mutate(row = row_number()) |>
+    group_by(agent_id) |>
+    summarize(start = min(row), stop = max(row), .groups = "drop") |>
+    arrange(agent_id)
+  list(
+    N = nrow(df), J = max(df$agent_id), S = max(df$species_id),
+    species_of = species_of, agent = df$agent_id,
+    choice = df$choice, op_choice = df$op_choice,
+    start = boundaries$start, stop = boundaries$stop,
+    agent_lookup = df |> distinct(agent_id, id, species, species_id),
+    species_lookup = df |> distinct(species_id, species) |> arrange(species_id)
+  )
+}
+```
+
+
+# SBC
+
+```{r}
+# Define the strict SBC generator wrapper
+generate_sbc_dataset <- function(n_agents = 60, n_trials = 40) {
+  
+  # 1. Simulate the universe (draws hyperparams and agent params from priors)
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agents = n_agents, 
+    n_trials = n_trials
+  )
+  
+  sim_data <- sim_data %>% 
+    rename(
+      S = n_agents,
+      N = n_trials
+      )
+  
+  # 2. Extract the true generative hyperparameters
+  mu_alpha_true <- sim_data$mu_alpha[1]
+  sigma_alpha_true <- sim_data$sigma_alpha[1]
+  mu_b_log_true <- sim_data$mu_b_log[1]
+  sigma_b_log_true <- sim_data$sigma_b_log[1]
+  mu_lambda_logit_true <- sim_data$mu_lambda_logit[1]
+  sigma_lambda_logit_true <- sim_data$sigma_lambda_logit[1]
+  #deltaBPM <- sim_data$deltaBPM
+  
+  # 3. Extract the true individual latent parameters (must preserve agent order)
+  theta_true <- sim_data |> 
+    distinct(S, theta) |> 
+    arrange(S) |> 
+    pull(theta)
+  
+  # 4. Prepare the strictly typed list for CmdStanR
+  stan_data <- list(
+      N = nrow(sim_data),
+      S = 60,
+      subj = sim_data$S,
+      dBPM = sim_data$deltaBPM,
+      choice = sim_data$choice,
+      prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
+      prior_mu_alpha_scale         =  7,
+      prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
+      prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
+      prior_mu_b_log_scale          =  0.4,
+      prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
+      prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+      prior_mu_lambda_logit_scale   =  0.4,
+      prior_sigma_lambda_logit_rate =  2.5    # E[sigma_lambda_logit] = 0.4
+)
+
+#str(hier_stan_data)
+  
+  #stan_data <- prep_stan_data(sim_data, sim_data$n_agent)
+  
+  # 5. Return the exact structure required by the SBC package
+  list(
+    variables = list(mu_alpha = mu_alpha_true, 
+                     sigma_alpha = sigma_alpha_true,
+                     mu_b_log = mu_b_log_true, 
+                     sigma_b_log = sigma_b_log_true,
+                     mu_lambda_logit = mu_lambda_logit_true,
+                     sigma_lambda_logit = sigma_lambda_logit_true
+                     ),
+    generated = stan_data
+  )
+  # list(
+  #   variables = list(
+  #     mu_theta = mu_true,
+  #     sigma_theta = sigma_true,
+  #     theta_logit = theta_true
+  #   ),
+  #   generated = stan_data
+  # )
+}
+```
+
+```{r}
+file = file.path('simple_model_hrd_hierarchical.stan')
+model <- cmdstan_model(
+  file)
+
+backend <- SBC::SBC_backend_cmdstan_sample(
+  model,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 0
+)
+```
+
+```{r}
+# Register the generator function
+generator <- SBC::SBC_generator_function(generate_sbc_dataset, n_agents = 60, n_trials = 40)
+
+# Execute simulation based calibration
+datasets <- SBC::generate_datasets(generator, 50)
+
+
+start_time <-  Sys.time()
+
+sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+
+end_time <- Sys.time()
+time_equal <- end_time - start_time
+print(time_equal)
+```
+
+```{r}
+fit_check <- model$sample(data = generate_sbc_dataset()$generated, chains = 1, iter_sampling = 100)
+fit_check$summary() |> pull(variable) |> head(10)
+```
+
+
+```{r}
+sbc_results # to get an overview # same as summary(sbc_results)
+sbc_results$errors
+# no divergent transitions
+# rhat is ok
+# ess_bulk and ss_tail are good too
+sbc_results$backend_diagnostics
+
+hist(sbc_results$stats$rhat)
+
+saveRDS(sbc_results, here('SBC', 'sbc_results_hier2.rds'))
+```
+
+```{r}
+diagnostics <- sbc_results$default_diagnostics
+diagnostics
+sbc_results$stats
+```
+```{r}
+SBC::plot_rank_hist(sbc_results)
+```
+```{r}
+# parameter recovery 
+SBC::plot_sim_estimated(sbc_results)
 ```
 
 # OTHER notes below
