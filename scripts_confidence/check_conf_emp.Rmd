@@ -1,0 +1,418 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+pacman::p_load(
+  tidyverse,
+  patchwork,
+  furrr,
+  purrr,
+  here)
+```
+
+```{r}
+# Paths 
+path_to_plot = here("scripts_confidence", "plots_raw_confidence")
+
+# path to data
+base_path <- "/Users/au611734/Documents/cicap_youth/data/data_hrd"
+
+path_HC        <- file.path(base_path, "kontrol_HRD_REDCap")
+path_FAPD_pre  <- file.path(base_path, "FGID_HRD_REDCap_pre_i-CBT")
+path_FAPD_post <- file.path(base_path, "FGID_HRD_REDCap_post_i-CBT")
+```
+
+
+# create function to load every data file 
+
+```{r}
+# ============================================================
+# Confidence Ratings by deltaBPM (binned) and Correctness
+# Groups: HC, FAPD_pre, FAPD_post
+# ============================================================
+# Column name assumptions
+#   confidence : numeric confidence rating, 1 to 100
+#   correct    : string indicating correct vs incorrect (TRUE / FALSE)
+#   deltaBPM   : numeric delta BPM value
+# ============================================================
+
+
+# ---- 1. Load data from all three group folders ------------------------------
+
+# Helper: read all _final.txt files from a folder, tag with group + recordid
+read_group_data <- function(path, group_label) {
+  files <- list.files(path, pattern = "_final\\.txt$", full.names = TRUE)
+
+  if (length(files) == 0) {
+    warning(paste("No _final.txt files found in:", path))
+    return(tibble())
+  }
+
+  map_dfr(files, function(file) {
+    filename <- basename(file)
+    recordid <- str_extract(filename, "(?i)(?<=recordid[_-])\\d+") # case insensitive
+
+    read_delim(file) %>%
+      mutate(
+        cohort   = group_label,
+        recordid = as.numeric(recordid)
+      )
+  })
+}
+
+# Read all three groups
+df_HC        <- read_group_data(path_HC,        "HC")
+df_FAPD_pre  <- read_group_data(path_FAPD_pre,  "FAPD_pre")
+df_FAPD_post <- read_group_data(path_FAPD_post, "FAPD_post")
+
+# Combine
+df_all <- bind_rows(df_HC, df_FAPD_pre, df_FAPD_post)
+```
+
+
+```{r}
+# ---- 2. Configuration -------------------------------------------------------
+
+# Column name mapping 
+COL_CONFIDENCE <- "Confidence"
+COL_CORRECT    <- "ResponseCorrect"
+COL_DELTABPM   <- "Alpha"
+
+# ---- 3. Tidy & bin ----------------------------------------------------------
+
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+df <- df_all %>%
+  rename(
+    confidence = Confidence,
+    correct    = ResponseCorrect,
+    deltaBPM   = Alpha
+  ) %>%
+  mutate(
+    # Normalise 'correct' to clean labels regardless of input format
+    correct = case_when(
+      correct == "TRUE" ~ 1,
+      correct == "FALSE" ~ 0,
+      .default = correct # if none of the above values match, just put what ever was already in the correct column
+    )
+  ) %>% 
+  drop_na(confidence, correct, deltaBPM) 
+```
+
+```{r}
+# bins
+n_bins = 9
+bins <- seq(-50.5, 50.5, length.out = n_bins + 1) # length.out is number of boundaries, not bins
+
+```
+
+
+```{r}
+# ---- 4. Summarise for averaged plots (per cohort) ---------------------------
+
+############ plot average HC ########
+n_subjects <- df %>% 
+  filter(cohort == 'HC') %>% 
+  distinct(recordid) %>% 
+  nrow()
+
+df_summary <- df %>% 
+  filter(cohort == 'HC') %>% 
+  mutate(
+    correct = as.factor(correct),
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    n         = n(),
+    mean_conf = mean(confidence, na.rm = TRUE),
+    sd = sd(confidence),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+df_summary %>%
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  geom_text(aes(label = n, y = 5), size = 3, position = position_dodge(width = 0.8)) +
+  annotate("text", x = 2.5, y = 10, size = 4, label = "Number of datapoints in each bin:", color = "lightskyblue4") +
+  labs(
+    title = paste0("Healthy controls mean confidence ratings and SE error bars, N = ", n_subjects)
+  ) +
+  coord_cartesian(ylim = c(0, 100)) 
+
+#ggsave(filename = paste0("HC_mean_conf_", n_bins, "_bins.png"), path = path_to_plot, width = 22, height = 15, units = "cm")
+
+```
+
+```{r}
+############ plot average FAPD pre ########
+n_subjects <- df %>% 
+  filter(cohort == 'FAPD_pre') %>% 
+  distinct(recordid) %>% 
+  nrow()
+
+df_summary <- df %>% 
+  filter(cohort == 'FAPD_pre') %>% 
+  mutate(
+    correct = as.factor(correct),
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    n         = n(),
+    mean_conf = mean(confidence, na.rm = TRUE),
+    sd = sd(confidence),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+df_summary %>%
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  geom_text(aes(label = n, y = 5), size = 3, position = position_dodge(width = 0.8)) +
+  annotate("text", x = 2.5, y = 10, size = 4, label = "Number of datapoints in each bin:", color = "lightskyblue4") +
+  labs(
+    title =  paste0("FAPD pre mean confidence ratings and SE error bars, N = ", n_subjects)
+  ) +
+  coord_cartesian(ylim = c(0, 100)) 
+
+#ggsave(filename = paste0("FAPD_pre_mean_conf_", n_bins, "_bins.png"), path = path_to_plot, width = 22, height = 15, units = "cm")
+```
+
+
+```{r}
+############ plot average FAPD_post ########
+n_subjects <- df %>% 
+  filter(cohort == 'FAPD_post') %>% 
+  distinct(recordid) %>% 
+  nrow()
+
+df_summary <- df %>% 
+  filter(cohort == 'FAPD_post') %>% 
+  mutate(
+    correct = as.factor(correct),
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    n         = n(),
+    mean_conf = mean(confidence, na.rm = TRUE),
+    sd = sd(confidence),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+df_summary %>%
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  geom_text(aes(label = n, y = 5), size = 3, position = position_dodge(width = 0.8)) +
+  annotate("text", x = 2.5, y = 10, size = 4, label = "Number of datapoints in each bin:", color = "lightskyblue4") +
+  labs(
+    title = paste0("FAPD_post mean confidence ratings and SE error bars, N = ", n_subjects)
+  ) +
+  coord_cartesian(ylim = c(0, 100)) 
+
+#ggsave(filename = paste0("FAPD_post_mean_conf_", n_bins, "_bins.png"), path = path_to_plot, width = 22, height = 15, units = "cm")
+
+```
+
+```{r}
+########### ALL DATASETS ########
+n_datasets <- df %>%
+  distinct(subj) %>% 
+  nrow()
+
+
+df_summary <- df %>% 
+  mutate(
+    correct = as.factor(correct),
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    n         = n(),
+    mean_conf = mean(confidence, na.rm = TRUE),
+    sd = sd(confidence),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  ) #%>% complete(deltaBPM_bin, correct)   # fills in missing bin/correct combinations with NA
+
+df_summary %>%
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  geom_text(aes(label = n, y = 5), size = 3, position = position_dodge(width = 0.8)) +
+  annotate("text", x = 2.5, y = 10, size = 4, label = "Number of datapoints in each bin:", color = "lightskyblue4") +
+  labs(
+    title    = paste("All datasets: mean confidence ratings and SE error bars, N =", n_datasets, "datasets"),
+    subtitle = "NB some datasets belong to the same participant"
+  ) +
+  coord_cartesian(ylim = c(0, 100)) 
+
+#ggsave(filename = paste0("all_mean_conf_", n_bins, "_bins.png"), path = path_to_plot, width = 20, height = 15, units = "cm")
+
+# df %>% 
+#   mutate(
+#     correct = as.factor(correct),
+#     deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+#   ) %>%
+#   group_by(deltaBPM_bin, correct) %>%
+#   summarise(
+#     mean_conf = mean(confidence, na.rm = TRUE),
+#     se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+#     .groups   = "drop"
+#   ) %>%
+#   complete(deltaBPM_bin, correct) %>%   # fills in missing bin/correct combinations with NA
+#   ggplot() +
+#   aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+#   geom_point() +
+#   geom_line() +
+#   geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+#   labs(
+#     title = paste("All datasets: mean confidence ratings and SE error bars N =", n_datasets, "datasets"),
+#     subtitle = "NB some datasets belong to the same participant"
+#   ) + coord_cartesian(ylim = c(0,100))
+# 
+
+```
+
+
+```{r}
+
+# ---- 5. Plot raw confidence ratings per participant ---------------------------
+
+# first create new participant id's based on group and current recordid 
+df = df %>% mutate(
+  subj = paste0(cohort, recordid),
+  subj = as.factor(subj),
+  subj = match(subj, unique(subj)),
+  subj = as.factor(subj),
+  correct = as.factor(correct)
+)
+
+# then make function to plot each subjects raw confidence ratings colored by correct/incorrect
+
+plot_conf_raw <- function(subject, save_plot = FALSE){
+  
+  df_subj = df %>% filter(subj == subject)
+  group <- unique(df_subj$cohort)
+  
+  #create plot
+  plot = df_subj %>% 
+  ggplot() +
+  aes(deltaBPM, confidence, color = correct) + geom_point() + 
+  coord_cartesian(xlim = c(-50.5,50.5), ylim = c(0,100)) + 
+  labs(title = paste("Raw confidence ratings for subject", group, subject))
+  
+  if (save_plot){
+    path_to_plot = here("scripts_confidence", "plots_raw_confidence")
+    ggsave(filename = paste0("raw_conf_", group ,"_", subject,".png"), 
+           path = path_to_plot, width = 20, height = 15, units = "cm")
+  }
+  return(plot)
+}
+
+# walk through list of datasets
+walk(unique(df$subj), plot_conf_raw, save_plot = TRUE)
+
+# testing
+#plot_conf_raw(171)
+
+```
+
+```{r}
+# plot colored by response times and without fixed x-axis to more easily inspect data
+plot_conf_raw_rt <- function(subject, save_plot = FALSE){
+  
+  df_subj = df %>% filter(subj == subject)
+  group <- unique(df_subj$cohort)
+  
+  #create plot
+  plot = df_subj %>% 
+  ggplot() +
+  aes(deltaBPM, confidence, color = DecisionRT) + geom_point() + 
+  coord_cartesian(xlim = c(-50.5,50.5)) + #, ylim = c(0,100)) + 
+  labs(title = paste("Raw confidence ratings for subject", group, subject))
+  
+  if (save_plot){
+    path_to_plot = here("scripts_confidence", "plots_raw_confidence")
+    ggsave(filename = paste0("raw_conf_RT_", group ,"_", subject,".png"), 
+           path = path_to_plot, width = 20, height = 15, units = "cm")
+  }
+  return(plot)
+}
+
+#plot_conf_raw_rt(132)
+#plot_conf_raw_rt(171)
+
+walk(unique(df$subj), plot_conf_raw_rt, save_plot = TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# plot binned ratings per participant - might not make sense
+df %>% filter(subj==6) %>% 
+  mutate(
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>% 
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    mean_conf = mean(confidence, na.rm = TRUE),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  ) %>%
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  labs(
+    title = paste("Participant",df$cohort, df$subj, "mean confidence ratings and SE error bars"
+      )
+    ) #+ geom_point(y = df$confidence) # might be nice to overlay raw data points
+
+
+df_summary <- df %>% 
+  filter(subj == '1') %>% 
+  mutate(
+    correct = as.factor(correct),
+    deltaBPM_bin = cut(deltaBPM, breaks = 7, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, correct) %>%
+  summarise(
+    n         = n(),
+    mean_conf = mean(confidence, na.rm = TRUE),
+    sd = sd(confidence),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+```
