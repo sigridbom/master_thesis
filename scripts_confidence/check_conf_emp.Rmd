@@ -265,28 +265,60 @@ df_summary %>%
 
 #ggsave(filename = paste0("all_mean_conf_", n_bins, "_bins.png"), path = path_to_plot, width = 20, height = 15, units = "cm")
 
-# df %>% 
-#   mutate(
-#     correct = as.factor(correct),
-#     deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
-#   ) %>%
-#   group_by(deltaBPM_bin, correct) %>%
-#   summarise(
-#     mean_conf = mean(confidence, na.rm = TRUE),
-#     se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
-#     .groups   = "drop"
-#   ) %>%
-#   complete(deltaBPM_bin, correct) %>%   # fills in missing bin/correct combinations with NA
-#   ggplot() +
-#   aes(x = deltaBPM_bin, y = mean_conf, color = correct, group = correct) +
-#   geom_point() +
-#   geom_line() +
-#   geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
-#   labs(
-#     title = paste("All datasets: mean confidence ratings and SE error bars N =", n_datasets, "datasets"),
-#     subtitle = "NB some datasets belong to the same participant"
-#   ) + coord_cartesian(ylim = c(0,100))
-# 
+
+# plotting all data points just to see
+df %>%
+  mutate(
+    correct = as.factor(correct) 
+    ) %>%
+  ggplot() +
+  aes(x = deltaBPM, y = confidence, color = Decision) + #, group = Decision) +
+  geom_point() +
+  labs(
+    title = paste("All datasets: mean confidence ratings and SE error bars N =", n_datasets, "datasets"),
+    subtitle = "NB some datasets belong to the same participant"
+  ) 
+
+```
+
+```{r}
+# plotting decision
+n_bins = 6
+bins <- seq(-50.5, 50.5, length.out = n_bins + 1) # length.out is number of boundaries, not bins
+
+
+df %>% # plotting decision not correct or not
+  mutate(
+    deltaBPM_bin = cut(deltaBPM, breaks = bins, include.lowest = TRUE)
+  ) %>%
+  group_by(deltaBPM_bin, Decision) %>%
+  summarise(
+    mean_conf = mean(confidence, na.rm = TRUE),
+    se_conf   = sd(confidence, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  ) %>%
+ # complete(deltaBPM_bin, correct) %>%   # fills in missing bin/correct combinations with NA
+  ggplot() +
+  aes(x = deltaBPM_bin, y = mean_conf, color = Decision, group = Decision) +
+  geom_point() +
+  geom_smooth() +
+  geom_errorbar(aes(ymin = mean_conf - se_conf, ymax = mean_conf + se_conf), width = 0.25) +
+  labs(
+    title = paste("All datasets: mean confidence ratings and SE error bars N =", n_datasets, "datasets"),
+    subtitle = "NB some datasets belong to the same participant"
+  ) #+ coord_cartesian(ylim = c(0,100))
+
+
+df %>% # plotting decision not correct or not
+ # complete(deltaBPM_bin, correct) %>%   # fills in missing bin/correct combinations with NA
+  ggplot() +
+  aes(x = deltaBPM, y = confidence, color = Decision, group = Decision) +
+  geom_smooth() +
+  labs(
+    title = paste("All datasets: mean confidence ratings and SE error bars N =", n_datasets, "datasets"),
+    subtitle = "NB some datasets belong to the same participant"
+  ) #+ coord_cartesian(ylim = c(0,100))
+
 
 ```
 
@@ -363,7 +395,61 @@ walk(unique(df$subj), plot_conf_raw_rt, save_plot = TRUE)
 
 ```
 
+```{r}
+# plot colored by decision (faster/slower) and without fixed y-axis to more easily inspect data
+plot_conf_raw_decision_no_fixed_axis <- function(subject, save_plot = FALSE){
+  
+  df_subj = df %>% filter(subj == subject)
+  group <- unique(df_subj$cohort)
+  
+  #create plot
+  plot = df_subj %>% 
+  ggplot() +
+  aes(deltaBPM, confidence, color = Decision) + geom_point() + 
+  coord_cartesian(xlim = c(-50.5,50.5)) + #, ylim = c(0,100)) + 
+  labs(title = paste("Raw confidence ratings for subject", group, subject))
+  
+  if (save_plot){
+    path_to_plot = here("scripts_confidence", "plots_raw_confidence")
+    ggsave(filename = paste0("raw_conf_decision_", group ,"_", subject,".png"), 
+           path = path_to_plot, width = 20, height = 15, units = "cm")
+  }
+  return(plot)
+}
 
+plot_conf_raw_decision_no_fixed_axis(132)
+plot_conf_raw_decision_no_fixed_axis(171)
+
+walk(unique(df$subj), plot_conf_raw_decision_no_fixed_axis, save_plot = TRUE)
+```
+
+```{r}
+# plot colored by decision (faster/slower) and WITH fixed y-axis to more easily COMPARE data across participants
+plot_conf_raw_decision_fixed_y_axis <- function(subject, save_plot = FALSE){
+  
+  df_subj = df %>% filter(subj == subject)
+  group <- unique(df_subj$cohort)
+  
+  #create plot
+  plot = df_subj %>% 
+  ggplot() +
+  aes(deltaBPM, confidence, color = Decision) + geom_point() + 
+  coord_cartesian(xlim = c(-50.5,50.5), ylim = c(0,100)) + 
+  labs(title = paste("Raw confidence ratings and decision for subject", group, subject))
+  
+  if (save_plot){
+    path_to_plot = here("scripts_confidence", "plots_raw_confidence")
+    ggsave(filename = paste0("raw_conf_decision_fixed_y_", group ,"_", subject,".png"), 
+           path = path_to_plot, width = 20, height = 15, units = "cm")
+  }
+  return(plot)
+}
+
+plot_conf_raw_decision_fixed_y_axis(132)
+plot_conf_raw_decision_fixed_y_axis(171)
+
+walk(unique(df$subj), plot_conf_raw_decision_fixed_y_axis, save_plot = TRUE)
+```
 
 
 
