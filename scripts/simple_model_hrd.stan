@@ -42,8 +42,8 @@ model {
   vector[N] theta; // stan doesn't allow constraints of parameters in model block (removed 0-1) - should this be in the data section?
 
   // priors
-  target += normal_lpdf(alpha| -10, 10); 
-  target += normal_lpdf(b_log | 2.5, .4); 
+  target += normal_lpdf(alpha| -10, 20); // changed from -10, 10 to that on 29.06
+  target += normal_lpdf(b_log | 2.5, 0.6); // changed from 2.5 to 3.5 and 0.4 to 1 on 29.06
   target += normal_lpdf(lambda_logit | -3, .4);
   
   // likelihood
@@ -61,9 +61,9 @@ generated quantities{
   real alpha_prior;
   real b_log_prior;
   real lambda_logit_prior;
-
-  alpha_prior = normal_rng(-10, 10);
-  b_log_prior       = normal_rng(2.5, 0.4);
+  
+  alpha_prior = normal_rng(-10, 20); // changed from -10, 10 to that on 29.06
+  b_log_prior       = normal_rng(2.5, 0.6); // changed from 2.5 to 3.5 and 0.4 to 1 on 29.06
   lambda_logit_prior  = normal_rng(-3, 0.4);
   
   // trying non-informed priors - did not improve things
@@ -72,24 +72,34 @@ generated quantities{
   //lambda_log_prior = beta(1,1);
   
   real beta_prior = exp(b_log_prior);
-  real lambda_prior = exp(lambda_logit_prior);
+  real lambda_prior = 0.5*inv_logit(lambda_logit_prior);
   
+  // prior predictive check
   vector<lower=0, upper=1>[N] theta_prior_p;
+  array[N] int choice_prior_pred; //added 29.06
+  int choice_prior_sum;
+
   
+  // 29.06 prior predictive check sim
   for (n in 1:N) {
     theta_prior_p[n] = lambda_prior + (1 - 2 * lambda_prior) *
                  (0.5+0.5*erf((dBPM[n] - alpha_prior) / (beta_prior*sqrt(2))));
+    choice_prior_pred[n] = bernoulli_rng(theta_prior_p[n]); // added 29-06
   }
+  choice_prior_sum = sum(choice_prior_pred); // added 29-06
   
   // generate model predictions given the data for posterior predictive checks
   vector<lower=0, upper=1>[N] theta_p;
+  array[N] int choice_pred;
+  int choice_sum;
   
   for (n in 1:N) {
     theta_p[n] = lambda + (1 - 2 * lambda) *
                  (0.5+0.5*erf((dBPM[n] - alpha) / (beta*sqrt(2))));
+    choice_pred[n] = bernoulli_rng(theta_p[n]);
   }
-}  
-  // generate model predictions given only the priors for prior predictive checks
+  choice_sum = sum(choice_pred);
+    // generate model predictions given only the priors for prior predictive checks
   // generate log_likehood estimates for model comparison
 
   //test
@@ -105,3 +115,4 @@ generated quantities{
 //    y_rep[n] = bernoulli_rng(theta[n]);
 //    log_lik[n] = bernoulli_lpmf(choice[n] | theta[n]);
  // }
+}  

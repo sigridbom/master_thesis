@@ -1,0 +1,353 @@
+---
+title: "1_simple_hrd_model"
+output: word_document
+date: "2026-06-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# 1. Ensure 'pacman' is installed
+if (!require("pacman")) install.packages("pacman")
+
+# 2. Load required packages using pacman for efficient package management - ensures packages are installed if missing, then loads them
+pacman::p_load(
+  tidyverse,    # Core suite for data manipulation (dplyr) and plotting (ggplot2)
+  here,         # For creating robust file paths relative to the project root (optional but good practice)
+  posterior,    # Provides tools for working with posterior distributions
+  cmdstanr,     # The R interface to Stan (via CmdStan)
+  bayesplot,    # Specialized plotting functions for Bayesian models
+  patchwork,    # For easily combining multiple ggplot plots
+  priorsense,   # For automated prior sensitivity analysis
+  SBC,          # Simulation-Based Calibration Checks
+  future,       # Parallel processing
+  furrr,         # Parallel mapping
+  pracma        # to be used in the probit regression formula
+)
+
+# Set a default theme for ggplot for consistency
+theme_set(theme_classic()) # Use a classic theme with white background
+
+# Define relative paths 
+stan_model_dir <- here("stan")
+stan_results_dir <- here("simmodels")
+sim_data_dir <- here("simdata")
+
+# Create directories if they don't exist (important for first run)
+if (!dir.exists(stan_model_dir)) dir.create(stan_model_dir)
+if (!dir.exists(stan_results_dir)) dir.create(stan_results_dir)
+if (!dir.exists(sim_data_dir)) dir.create(sim_data_dir)
+
+# Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
+regenerate_simulations <- FALSE 
+```
+
+Clean up of code in "generating_data.Rmd" + "fit_to_simulated.Rmd"
+
+#1. Mathematical formulation
+Simple HRD model with lapse rate
+
+$$
+
+p(x \mid \alpha,\beta, \lambda) = \lambda + (1-2*\lambda)*(0.5+0.5*erf(\frac{x-\alpha}{\beta*\sqrt{2}}))
+
+$$
+which can be written in R as follows
+
+```{r}
+ probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+}
+```
+
+we also need the inverse logit function, to transform values from log-odds scale to probability scale (0-1)
+```{r}
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+```
+
+## generating data
+
+```{r}
+alpha = -10
+lambda = 0.05
+beta = 10
+N = 100
+
+# new 
+sim_data_sigrid = data.frame(stimulus = rnorm(N,alpha,2*beta), subject = 1) %>% mutate(trial = 1:n())
+
+# generate probability of answering 1, faster based on psychometric function
+sim_data_lapse = sim_data_sigrid %>% 
+  select(c(subject, trial, stimulus))
+
+
+# generate probability of answering 1, faster based on psychometric function
+sim_data_lapse = sim_data_sigrid %>% 
+  select(c(subject, trial, stimulus))
+
+sim_data_lapse$p_faster <- probit_regression(
+  x     = sim_data_lapse$stimulus,
+  alpha = alpha,
+  beta  = beta,
+  lambda = lambda
+)
+
+# generate responses
+sim_data_lapse$response <- rbinom(
+  n = nrow(sim_data_lapse),
+  size = 1,
+  prob = sim_data_lapse$p_faster
+)
+```
+
+## Plotting simulated data
+
+```{r}
+sim_data_lapse %>% ggplot() + 
+  aes(x = stimulus) + 
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Stim",
+    y = "Density"
+  )
+
+# plotting the probabilities of answering 'faster'
+sim_data_lapse %>%
+  ggplot(aes(x = p_faster))  +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Probability of answering 'faster'",
+    y = "Density"
+  )
+
+
+sim_data_lapse %>%
+  ggplot(aes(x = (stimulus), y = p_faster)) +
+  geom_jitter()+
+  labs(
+    x = "Delta BPM",
+    y = "Probability of answering 'faster'"
+  )
+```
+## Getting into stan
+```{r}
+# make data stan friendly i.e. in list form 
+simple_stan_data <- list(
+  N = nrow(sim_data_lapse),
+  dBPM = sim_data_lapse$stimulus,
+  choice = sim_data_lapse$response
+)
+
+str(simple_stan_data)
+```
+
+```{r}
+# specify stan file path and compile model 
+
+file = file.path('simple_model_hrd.stan')
+model <- cmdstan_model(
+  file)#, 
+#  cpp_options = list(stan_threads = FALSE), # enable threading - don't know what this means
+#  stanc_options = list("O1")) # basic optimization - don't know how
+
+```
+```{r}
+start_time <- Sys.time()
+
+fit <- model$sample(
+  data = simple_stan_data,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  #threads_per_chain = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 500#,
+ # show_messages= FALSE
+)
+
+end_time <- Sys.time()
+time_equal <- end_time - start_time
+print(time_equal)
+```
+
+```{r}
+# 1. Check for Divergent Transitions
+diagnostics <- fit$diagnostic_summary()
+cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collapse = ", "), "\n")
+```
+
+```{r}
+# 2. Check R-hat and ESS metrics
+fit_summary <- fit$summary(variables = c("alpha", "beta", "lambda"))
+fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
+```
+
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "alpha") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "alpha", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - beta
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "beta") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "beta", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - lambda
+draws_df <- as_draws_df(fit$draws())
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df, pars = "lambda") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df, pars = "lambda", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+Looks good.
+
+#2. Prior predictive checks
+
+Do the prior allow only plausible behavior?
+
+
+```{r}
+# Extract the summary statistic calculated from prior predictive simulations
+# 'prior_rep_sum' was calculated within the generated quantities block
+draws_gq <- as_draws_df(fit$draws()) # Ensure we have the draws as a dataframe
+observed_choice <- sum(sim_data_lapse$response) # Total number of 'right' choices in the actual observed data
+
+ppc_prior_ggplot <- ggplot(draws_gq, aes(x = choice_prior_sum)) +
+  # Draw the histogram of the model's prior predictions (light red)
+  geom_histogram(fill = "#ffbaba", color = "#ff5252", bins = 30, alpha = 0.8) +
+  
+  # Add the vertical line for the actual observed data (dark red)
+  geom_vline(xintercept = observed_choice, color = "darkred", linewidth = 1.2) +
+  
+  # Labels and theming
+  ggtitle("Prior Predictive Check: Total 'Faster' Choices",
+          subtitle = "Healthy = histogram spans the full range; observed value (dashed) is not in the tails") +
+  xlab(paste("Total Number of 'Faster' Choices (out of", N, "trials)")) +
+  ylab("Frequency") + 
+  coord_cartesian(xlim = c(0,100))
+
+ppc_prior_ggplot
+```
+looks okay - rouhgly uniform distribution with a mild mound shape spanning the full trial range from 0 to 100, and the observed value (from the simulated data) is about in the middle - but skewed towards 'Faster'.
+
+```{r}
+# CmdStanR
+draws <- fit$draws("theta_prior_p", format = "matrix")
+
+# Option 1: histogram of ALL theta_prior_p values (collapsed across trials and draws)
+hist(as.vector(draws), breaks = 50, 
+     main = "Prior predictive theta", xlab = "theta", xlim = c(0,1))
+
+# Option 2: plot the mean theta per trial with uncertainty
+theta_mean <- apply(draws, 2, mean)
+theta_lower <- apply(draws, 2, quantile, 0.05)
+theta_upper <- apply(draws, 2, quantile, 0.95)
+
+plot(sim_data_lapse$stimulus, theta_mean, ylim = c(0,1),
+     xlab = "dBPM", ylab = "theta",
+     main = "Prior predictive psychometric function")
+segments(sim_data_lapse$stimulus, theta_lower, sim_data_lapse$stimulus, theta_upper, col = "grey")
+
+# Option 3: plot a random sample of draws as psychometric curves (most informative)
+n_curves <- 50
+sampled <- sample(nrow(draws), n_curves)
+
+plot(NULL, xlim = range(sim_data_lapse$stimulus), ylim = c(0,1),
+     xlab = "dBPM", ylab = "theta",
+     main = "Prior predictive curves")
+for (i in sampled) {
+  lines(sort(sim_data_lapse$stimulus), draws[i, order(sim_data_lapse$stimulus)], col = rgb(0,0,1,0.1))
+}
+```
+#3. Posterior predictive checks
+
+```{r}
+# Extract posterior predictive simulations from the fitted object
+# This matrix has dimensions: [number_of_draws, number_of_trials]
+choice_pred <- fit$draws("choice_pred", format = "matrix")
+
+
+# Calculate the test statistic T(y) for the *actual* empirical data
+observed_choice <- sum(sim_data_lapse$response) 
+
+# Calculate the test statistic T(y_rep) for *each* replicated dataset
+# We compute the row-wise sum across the posterior draws
+choice_pred_sums <- rowSums(choice_pred)
+
+# Bundle into a tibble for strictly structured plotting
+ppc_df <- tibble(
+  Replicated_Sum = choice_pred_sums
+)
+
+# --- Graphical Posterior Predictive Check using ggplot2 ---
+ppc_posterior_ggplot <- ggplot(ppc_df, aes(x = Replicated_Sum)) +
+  geom_histogram(fill = "skyblue", color = "white", alpha = 0.7, bins = 30) +
+  geom_vline(xintercept = observed_choice, color = "black", linetype = "dashed", linewidth = 1) +
+  ggtitle("Posterior Predictive Check: Total 'Faster' Choices",
+          subtitle = "Healthy = observed value (dashed) sits inside the bulk of replicated datasets") +
+  xlab(paste("Total Number of 'Faster' Choices (out of", N, "trials)")) +
+  ylab("Frequency (Replicated Datasets)") +
+  # Add annotation for the empirical ground truth
+  annotate(
+    "text", x = observed_choice, y = Inf, 
+    label = "Sim data", 
+    vjust = 2, hjust = if(observed_choice > N/2) 1.1 else -0.1, 
+    size = 4, fontface = "bold"
+  ) 
+ppc_posterior_ggplot
+```
+
+
+#4. Prior posterior update checks
+
+#5. Sensitivity analysis
+
+#6. Parameter recovery and SBC
