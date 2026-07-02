@@ -23,9 +23,25 @@ pacman::p_load(
   priorsense,   # For automated prior sensitivity analysis
   SBC,          # Simulation-Based Calibration Checks
   future,       # Parallel processing
-  furrr,         # Parallel mapping
-  pracma        # to be used in the probit regression formula
+  furrr,        # Parallel mapping
+  pracma,       # to be used in the probit regression formula
+  cli,
+  devtools,     # to download package from github
+  progressr,     # to get progress bar in SBC
+  posterior,
+  remotes       # to install specific version of ggplot needed to make priorsense dens plot
 )
+
+devtools::install_github("hyunjimoon/SBC") # to make SBC
+#progressr::handlers(global = TRUE) 
+#progressr::handlers(c("rstudio", "progress")) # måske bedre??
+
+
+# requires specific version of ggplot
+#packageVersion("ggplot2")
+install.packages("remotes")
+remotes::install_version("ggplot2", version = "3.5.1")
+
 
 # Set a default theme for ggplot for consistency
 theme_set(theme_classic()) # Use a classic theme with white background
@@ -40,11 +56,15 @@ if (!dir.exists(stan_model_dir)) dir.create(stan_model_dir)
 if (!dir.exists(stan_results_dir)) dir.create(stan_results_dir)
 if (!dir.exists(sim_data_dir)) dir.create(sim_data_dir)
 
+# Define path for saving/loading the fitted model object that includes the generated quantities
+model_file_gq <- file.path(stan_results_dir, "1_simple_hrd_model.rds")
+sbc_path <- file.path(stan_results_dir, "1_simple_hrd_model_sbc.rds")
+
 # Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
 regenerate_simulations <- FALSE 
 ```
 
-Clean up of code in "generating_data.Rmd" + "fit_to_simulated.Rmd"
+Clean up of code in "generating_data.Rmd" + "fit_to_simulated.Rmd" + parameter_recovery.Rmd
 
 #1. Mathematical formulation
 Simple HRD model with lapse rate
@@ -148,7 +168,8 @@ sim_data_lapse %>%
 simple_stan_data <- list(
   N = nrow(sim_data_lapse),
   dBPM = sim_data_lapse$stimulus,
-  choice = sim_data_lapse$response
+  choice = sim_data_lapse$response,
+  run_diagnostics = 1L # single model check
 )
 
 str(simple_stan_data)
@@ -156,49 +177,59 @@ str(simple_stan_data)
 
 ```{r}
 # specify stan file path and compile model 
-
-file = file.path('simple_model_hrd.stan')
-model <- cmdstan_model(
+file = file.path(stan_model_dir, 'simple_model_hrd.stan')
+model_gq <- cmdstan_model(
   file)#, 
 #  cpp_options = list(stan_threads = FALSE), # enable threading - don't know what this means
 #  stanc_options = list("O1")) # basic optimization - don't know how
 
-```
-```{r}
-start_time <- Sys.time()
 
-fit <- model$sample(
-  data = simple_stan_data,
-  seed = 123,
-  chains = 4,
-  parallel_chains = 4,
-  #threads_per_chain = 4,
-  iter_warmup = 1000,
-  iter_sampling = 2000,
-  refresh = 500#,
- # show_messages= FALSE
-)
+# check if model has been run already
+run_model <- regenerate_simulations || !file.exists(model_file_gq)
 
-end_time <- Sys.time()
-time_equal <- end_time - start_time
-print(time_equal)
+if (!run_model) {
+  fit_gq <- readRDS(model_file_gq)
+}
+
+if (run_model) {
+  start_time <- Sys.time()
+
+  fit_gq <- model_gq$sample(
+    data = simple_stan_data,
+    seed = 123,
+    chains = 4,
+    parallel_chains = 4,
+    #threads_per_chain = 4,
+    iter_warmup = 1000,
+    iter_sampling = 2000, # 8000 posterior draws in total
+    refresh = 500#,
+   # show_messages= FALSE
+  )
+
+  end_time <- Sys.time()
+  time_equal <- end_time - start_time
+  print(time_equal)
+  
+  fit_gq$save_object(file = model_file_gq)
+}
 ```
+
 
 ```{r}
 # 1. Check for Divergent Transitions
-diagnostics <- fit$diagnostic_summary()
+diagnostics <- fit_gq$diagnostic_summary()
 cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collapse = ", "), "\n")
 ```
 
 ```{r}
 # 2. Check R-hat and ESS metrics
-fit_summary <- fit$summary(variables = c("alpha", "beta", "lambda"))
+fit_summary <- fit_gq$summary(variables = c("alpha", "beta", "lambda"))
 fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
 ```
 
 ```{r}
 # 3. Visual Checks (Trace and Rank Plots) - alpha
-draws_df <- as_draws_df(fit$draws())
+draws_df <- as_draws_df(fit_gq$draws())
 
 # A healthy trace plot is well-mixed with no wandering
 p_trace <- bayesplot::mcmc_trace(draws_df, pars = "alpha") + 
@@ -215,7 +246,7 @@ p_trace / p_rank
 ```
 ```{r}
 # 3. Visual Checks (Trace and Rank Plots) - beta
-draws_df <- as_draws_df(fit$draws())
+draws_df <- as_draws_df(fit_gq$draws())
 
 # A healthy trace plot is well-mixed with no wandering
 p_trace <- bayesplot::mcmc_trace(draws_df, pars = "beta") + 
@@ -232,7 +263,7 @@ p_trace / p_rank
 ```
 ```{r}
 # 3. Visual Checks (Trace and Rank Plots) - lambda
-draws_df <- as_draws_df(fit$draws())
+draws_df <- as_draws_df(fit_gq$draws())
 
 # A healthy trace plot is well-mixed with no wandering
 p_trace <- bayesplot::mcmc_trace(draws_df, pars = "lambda") + 
@@ -257,7 +288,7 @@ Do the prior allow only plausible behavior?
 ```{r}
 # Extract the summary statistic calculated from prior predictive simulations
 # 'prior_rep_sum' was calculated within the generated quantities block
-draws_gq <- as_draws_df(fit$draws()) # Ensure we have the draws as a dataframe
+draws_gq <- as_draws_df(fit_gq$draws()) # Ensure we have the draws as a dataframe
 observed_choice <- sum(sim_data_lapse$response) # Total number of 'right' choices in the actual observed data
 
 ppc_prior_ggplot <- ggplot(draws_gq, aes(x = choice_prior_sum)) +
@@ -271,7 +302,7 @@ ppc_prior_ggplot <- ggplot(draws_gq, aes(x = choice_prior_sum)) +
   ggtitle("Prior Predictive Check: Total 'Faster' Choices",
           subtitle = "Healthy = histogram spans the full range; observed value (dashed) is not in the tails") +
   xlab(paste("Total Number of 'Faster' Choices (out of", N, "trials)")) +
-  ylab("Frequency") + 
+  ylab("Frequency") #+ 
   coord_cartesian(xlim = c(0,100))
 
 ppc_prior_ggplot
@@ -280,7 +311,7 @@ looks okay - rouhgly uniform distribution with a mild mound shape spanning the f
 
 ```{r}
 # CmdStanR
-draws <- fit$draws("theta_prior_p", format = "matrix")
+draws <- fit_gq$draws("theta_prior_p", format = "matrix")
 
 # Option 1: histogram of ALL theta_prior_p values (collapsed across trials and draws)
 hist(as.vector(draws), breaks = 50, 
@@ -307,12 +338,14 @@ for (i in sampled) {
   lines(sort(sim_data_lapse$stimulus), draws[i, order(sim_data_lapse$stimulus)], col = rgb(0,0,1,0.1))
 }
 ```
+First plots shows the problem which the ordered beta regression aims to solve exactly! More on that in another model.
+
 #3. Posterior predictive checks
 
 ```{r}
 # Extract posterior predictive simulations from the fitted object
 # This matrix has dimensions: [number_of_draws, number_of_trials]
-choice_pred <- fit$draws("choice_pred", format = "matrix")
+choice_pred <- fit_gq$draws("choice_pred", format = "matrix")
 
 
 # Calculate the test statistic T(y) for the *actual* empirical data
@@ -320,11 +353,11 @@ observed_choice <- sum(sim_data_lapse$response)
 
 # Calculate the test statistic T(y_rep) for *each* replicated dataset
 # We compute the row-wise sum across the posterior draws
-choice_pred_sums <- rowSums(choice_pred)
+choice_pred_sum <- rowSums(choice_pred)
 
 # Bundle into a tibble for strictly structured plotting
 ppc_df <- tibble(
-  Replicated_Sum = choice_pred_sums
+  Replicated_Sum = choice_pred_sum
 )
 
 # --- Graphical Posterior Predictive Check using ggplot2 ---
@@ -344,10 +377,352 @@ ppc_posterior_ggplot <- ggplot(ppc_df, aes(x = Replicated_Sum)) +
   ) 
 ppc_posterior_ggplot
 ```
+So what we see here is on the x-axis the number of trials (0-100) i.e. the maximum number of 'faster' choices (if one choses 'faster' (1) on all 100 trials, the data point of the sum would be 100) and on the y-axis how many of the posterior samples (of the simulated datasets) have that number of 'faster' choices in their dataset.
 
+This looks good - data is roughly centered around the middle but skewed towards choosing 'faster' more often than chance because the model and the emp data has a negative bias in the threshold, meaning that participants often reply 'faster' before the sounds are actually faster. 
+
+```{r}
+ppc_overlay_df <- tibble(
+  Replicated_Sum = c(draws_gq$choice_prior_sum, choice_pred_sum),
+  Distribution = factor(
+    rep(c("Prior Predictive", "Posterior Predictive"), each = length(choice_pred_sum)),
+    levels = c("Prior Predictive", "Posterior Predictive")
+  )
+)
+
+# 2. Generate the overlay plot
+ppc_overlay_ggplot <- ggplot(ppc_overlay_df, aes(x = Replicated_Sum, fill = Distribution)) +
+  # Use position = "identity" and alpha to ensure both distributions are visible
+  geom_histogram(position = "identity", alpha = 0.6, color = "white", bins = 30) +
+  geom_vline(xintercept = observed_choice, color = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Prior Predictive" = "#ffbaba", "Posterior Predictive" = "skyblue")) +
+  ggtitle("Prior vs. Posterior Predictive: Narrowing of Predictions After Fitting",
+          subtitle = "Posterior (blue) should be much tighter than prior (red) and centred on observed data") +
+  xlab(paste("Total Number of 'Right' Choices (out of", N, "trials)")) +
+  ylab("Frequency (Replicated Datasets)") +
+  # Add annotation for the empirical ground truth
+  annotate(
+    "text", x = observed_choice, y = Inf, 
+    label = "Empirical data", 
+    vjust = 2, hjust = if(observed_choice > N/2) 1.1 else -0.1, 
+    size = 4, fontface = "bold"
+  ) +
+  theme(
+    legend.position = "bottom", 
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12)
+  )
+
+print(ppc_overlay_ggplot)
+```
+```{r}
+# --- Example of checking another statistic (e.g., max run length) ---
+# Define a function to calculate the maximum run length in a vector
+max_run_length <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) return(0) 
+  rle_x <- rle(x) # Run Length Encoding calculates consecutive identical choices
+  if (length(rle_x$lengths) == 0) return(0) 
+  max(rle_x$lengths) 
+}
+
+# 2. Calculate the empirical test statistic T(y)
+observed_max_run <- max_run_length(sim_data_lapse$response)
+
+# 3. Extract prior replicated matrices and compute T(y_rep) for the prior
+# y_prior_rep is an S x N matrix generated from the prior distributions
+y_prior_rep <- fit_gq$draws("choice_prior_pred", format = "matrix")
+prior_max_runs <- apply(y_prior_rep, 1, max_run_length)
+
+# 4. Extract posterior replicated matrices and compute T(y_rep) for the posterior
+# y_post_rep is an S x N matrix generated from the posterior distributions
+y_post_rep <- fit_gq$draws("choice_pred", format = "matrix")
+post_max_runs <- apply(y_post_rep, 1, max_run_length)
+
+# 5. Bundle into a strictly structured tibble for overlay plotting
+ppc_run_df <- tibble(
+  Replicated_Max_Run = c(prior_max_runs, post_max_runs),
+  Distribution = factor(
+    rep(c("Prior Predictive", "Posterior Predictive"), each = length(post_max_runs)),
+    levels = c("Prior Predictive", "Posterior Predictive")
+  )
+)
+
+# 6. Generate the overlay plot
+p_ppc_max_run <- ggplot(ppc_run_df, aes(x = Replicated_Max_Run, fill = Distribution)) +
+  geom_histogram(position = "identity", alpha = 0.6, color = "white", bins = 20) +
+  geom_vline(xintercept = observed_max_run, color = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Prior Predictive" = "#ffbaba", "Posterior Predictive" = "skyblue")) +
+  ggtitle("Posterior Predictive: Maximum Run Length of Consecutive Choices",
+          subtitle = "Tests sequential structure — a model assuming i.i.d. trials should still pass this") +
+  xlab("Test Statistic T(y_rep): Maximum Run Length of Consecutive Choices") +
+  ylab("Frequency (Replicated Datasets)") +
+  # Add annotation for the empirical ground truth
+  annotate(
+    "text", x = observed_max_run, y = Inf, 
+    label = "Empirical T(y)", 
+    vjust = 2, hjust = -0.1, 
+    size = 4, fontface = "bold"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom", 
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12)
+  )
+
+print(p_ppc_max_run)
+```
+To test if the trials are independent - which our model assumes. It looks good, because the model doesn't have very long runs of choosing the same option again and again.
 
 #4. Prior posterior update checks
 
+```{r}
+# 4a. Look at the Posterior Estimate - alpha
+ggplot(draws_df) +
+  geom_density(aes(alpha, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(alpha_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = alpha, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Alpha (threshold)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "alpha  (threshold)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) +
+  theme_classic()
+```
+
+```{r}
+# 4b. Look at the Posterior Estimate - beta
+ggplot(draws_df) +
+  geom_density(aes(beta, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(beta_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = beta, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Beta (slope)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "beta (slope)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) 
+```
+```{r}
+# 4c. Look at the Posterior Estimate - lambda
+ggplot(draws_df) +
+  geom_density(aes(lambda, fill = "Posterior"), alpha = 0.6) +
+  geom_density(aes(lambda_prior, fill = "Prior"), alpha = 0.6) +
+  geom_vline(xintercept = lambda, linetype = "dashed", color = "black", linewidth = 1.2) +
+  scale_fill_manual(values = c("Posterior" = "blue", "Prior" = "red")) +
+  labs(
+    title    = "Prior-Posterior Update: Lambda (lapserate)",
+    subtitle = "Healthy = posterior (blue) is narrower than prior (red) and shifted toward the true value (dashed)",
+    x        = "lambda (lapserate)",
+    y        = "Density",
+    fill     = "Distribution"
+  ) 
+
+```
+Lambda doesn't look too good.
+
 #5. Sensitivity analysis
 
+```{r}
+# We run prior sense
+sensitivity_summary <- priorsense::powerscale_sensitivity(fit_gq,
+    prior_selection = c("alpha", "b_log", "lambda_logit"))
+sensitivity_summary
+
+# We extract the variables of interest
+param_metrics <- sensitivity_summary |>
+  dplyr::filter(variable %in% c("alpha", "b_log", "lambda_logit"))
+
+cat("\n--- Epistemic Diagnosis ---\n")
+print(param_metrics)
+
+# Visualize the geometric deformation of the posterior
+p_priorsense_dens <- priorsense::powerscale_plot_dens(
+  fit_gq,
+  prior_selection = c("alpha", "b_log", "lambda_logit"),
+  variables = c("alpha", "b_log", "lambda_logit")
+) 
+
+p_priorsense_dens
+
+```
+```{r}
+print(param_metrics)
+```
+Alpha looks good, beta is okay, and lambda is not looking good.
+
 #6. Parameter recovery and SBC
+
+```{r}
+#
+simulate_more_SBC = TRUE
+
+# Define the model
+file = file.path(stan_model_dir, 'simple_model_hrd.stan')
+model <- cmdstan_model(file)
+
+# Define the backend engine
+backend <- SBC::SBC_backend_cmdstan_sample(
+  model,
+  chains = 4, # changed from 4 to 1
+  parallel_chains = 4, # changed from 4 to 1 because I am handling parallellism with future
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  refresh = 100
+)
+
+# --- GROUP SETTINGS ---
+S <- 60      # number of participants per group dataset
+N <- 100     # trials per participant
+# total trials per dataset = S * N
+
+# Define the generator
+generate_group_dataset <- function(S, N){
+
+  #parameters shared across all participants
+  alpha_true = rnorm(n = 1, mean = -10, sd = 10) # kør bredere SD
+  b_log_true = rnorm(n = 1, mean = 2.5, sd = 0.6)
+  beta_true = exp(b_log_true)
+  lambda_logit_true = rnorm(n = 1, mean = -3, sd = 0.4)
+  lambda_true= 0.5*inv_logit(lambda_logit_true)
+  
+  # storage
+  dBPM_all <- numeric(S*N)
+  choice_all <- integer(S*N)
+
+  idx <- 1
+
+  for (s in 1:S) {
+    # stimuli per participant
+    deltaBPM <- rnorm(N, alpha_true, 2*beta_true)
+
+    # choice probability
+    theta_prob <- probit_regression(
+      x = deltaBPM,
+      alpha = alpha_true,
+      beta = beta_true,
+      lambda = lambda_true
+    )
+
+    # simulate binary choices
+    y_sim <- rbinom(N, size = 1, prob = theta_prob)
+
+    # place in joint data vector
+    dBPM_all[idx:(idx+N-1)] <- deltaBPM
+    choice_all[idx:(idx+N-1)] <- y_sim
+    idx <- idx + N
+  }
+
+  list(
+    variables = list(
+      alpha = alpha_true,
+      b_log = b_log_true,
+      lambda_logit = lambda_logit_true
+    ),
+    generated = list(
+      N = S*N,
+      dBPM = dBPM_all,
+      choice = choice_all,
+      run_diagnostics = 0L # SBC doesn't need all generated quantities
+    )
+  )
+}
+
+
+# Register generator
+generator <- SBC::SBC_generator_function(
+  generate_group_dataset,
+  S = S,
+  N = N
+)
+
+# Run SBC - see next chunk
+#datasets <- SBC::generate_datasets(generator, n_sims = 100)
+#sbc_results <- SBC::compute_SBC(datasets, backend, keep_fits = FALSE)
+```
+
+# check if code below works
+100 sims tog >40 min
+```{r}
+if (regenerate_simulations || !file.exists(sbc_path) || simulate_more_SBC) {
+ # future::plan(future::multisession, workers = 8) # I have 12  - dangerous!
+  sbc_datasets_simple <- SBC::generate_datasets(generator, n_sims = 50)
+  sbc_results_simple <- SBC::compute_SBC(sbc_datasets_simple, backend, keep_fits = FALSE)
+
+  if (!file.exists(sbc_path)){
+    saveRDS(
+      list(datasets = sbc_datasets_simple, results = sbc_results_simple),
+      sbc_path
+    )
+  }
+  if (file.exists(sbc_path) && simulate_more_SBC){
+    #load existing simulations
+    existing_sims <- readRDS(sbc_path)
+    # append new ones to existing
+    combined_datasets <- SBC::bind_datasets(existing_sims$datasets, sbc_datasets_simple)
+    combined_results <- SBC::bind_results(existing_sims$results, sbc_results_simple)
+    # save everything
+    saveRDS(
+      list(datasets = combined_datasets, results = combined_results),
+      sbc_path
+    )
+  }
+} else {
+  sbc_obj        <- readRDS(sbc_path)
+  sbc_datasets_simple <- sbc_obj$datasets
+  sbc_results_simple  <- sbc_obj$results
+}
+```
+
+```{r}
+# to check if it worked 
+nrow(sbc_obj$results$stats)
+nrow(sbc_results_simple$stats)
+nrow(combined_results$stats)
+
+```
+
+# add 40 and 100 trials
+
+```{r}
+# might have to reload data
+sbc_obj        <- readRDS(sbc_path)
+sbc_datasets_simple <- sbc_obj$datasets
+sbc_results_simple  <- sbc_obj$results
+  
+# check diagnostics
+sbc_results_simple
+sbc_results_simple$backend_diagnostics
+hist(sbc_results_simple$stats$rhat)
+```
+
+
+```{r} 
+# number of simulations
+n_sims = nrow(sbc_results_simple$stats)/3 # number of variables - check by writing #sbc_datasets_simple$variables
+
+# parameter recovery
+SBC::plot_sim_estimated(sbc_results_simple, variables = c("alpha", "b_log", "lambda_logit")) +
+  labs(
+    title    = sprintf("Parameter recovery with %d simulations", n_sims),
+    subtitle = "Healthy = simulated values correlate with actual value"
+  )
+```
+
+
+```{r}
+SBC::plot_rank_hist(sbc_results_simple)
+
+# with titles
+plot_rank_hist(sbc_results_simple, variables = c("alpha", "b_log", "lambda_logit")) +
+  labs(
+    title    = sprintf("SBC Rank Histograms with %d simulations", n_sims),
+    subtitle = "Healthy = bars flat within grey band. U-shape = overconfident."
+  )
+```
+
