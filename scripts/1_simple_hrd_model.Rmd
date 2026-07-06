@@ -28,7 +28,6 @@ pacman::p_load(
   cli,
   devtools,     # to download package from github
   progressr,     # to get progress bar in SBC
-  posterior,
   remotes       # to install specific version of ggplot needed to make priorsense dens plot
 )
 
@@ -37,7 +36,7 @@ devtools::install_github("hyunjimoon/SBC") # to make SBC
 #progressr::handlers(c("rstudio", "progress")) # måske bedre??
 
 
-# requires specific version of ggplot
+# priorsense requires specific version of ggplot
 #packageVersion("ggplot2")
 install.packages("remotes")
 remotes::install_version("ggplot2", version = "3.5.1")
@@ -62,6 +61,7 @@ sbc_path <- file.path(stan_results_dir, "1_simple_hrd_model_sbc.rds")
 
 # Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
 regenerate_simulations <- FALSE 
+simulate_more_SBC = TRUE
 ```
 
 Clean up of code in "generating_data.Rmd" + "fit_to_simulated.Rmd" + parameter_recovery.Rmd
@@ -559,9 +559,6 @@ Alpha looks good, beta is okay, and lambda is not looking good.
 #6. Parameter recovery and SBC
 
 ```{r}
-#
-simulate_more_SBC = TRUE
-
 # Define the model
 file = file.path(stan_model_dir, 'simple_model_hrd.stan')
 model <- cmdstan_model(file)
@@ -579,9 +576,12 @@ backend <- SBC::SBC_backend_cmdstan_sample(
 # --- GROUP SETTINGS ---
 S <- 60      # number of participants per group dataset
 N <- 100     # trials per participant
+#n_trials_min = 40
+#n_trials_max = 100
 # total trials per dataset = S * N
 
 # Define the generator
+#generate_group_dataset <- function(S, n_trials_min, n_trials_max){
 generate_group_dataset <- function(S, N){
 
   #parameters shared across all participants
@@ -649,18 +649,12 @@ generator <- SBC::SBC_generator_function(
 # check if code below works
 100 sims tog >40 min
 ```{r}
-if (regenerate_simulations || !file.exists(sbc_path) || simulate_more_SBC) {
+if (simulate_more_SBC || !file.exists(sbc_path)) {
  # future::plan(future::multisession, workers = 8) # I have 12  - dangerous!
   sbc_datasets_simple <- SBC::generate_datasets(generator, n_sims = 50)
   sbc_results_simple <- SBC::compute_SBC(sbc_datasets_simple, backend, keep_fits = FALSE)
 
-  if (!file.exists(sbc_path)){
-    saveRDS(
-      list(datasets = sbc_datasets_simple, results = sbc_results_simple),
-      sbc_path
-    )
-  }
-  if (file.exists(sbc_path) && simulate_more_SBC){
+  if (file.exists(sbc_path)){
     #load existing simulations
     existing_sims <- readRDS(sbc_path)
     # append new ones to existing
@@ -672,6 +666,14 @@ if (regenerate_simulations || !file.exists(sbc_path) || simulate_more_SBC) {
       sbc_path
     )
   }
+  
+  if (!file.exists(sbc_path)){
+    saveRDS(
+      list(datasets = sbc_datasets_simple, results = sbc_results_simple),
+      sbc_path
+    )
+  }
+
 } else {
   sbc_obj        <- readRDS(sbc_path)
   sbc_datasets_simple <- sbc_obj$datasets
@@ -680,14 +682,12 @@ if (regenerate_simulations || !file.exists(sbc_path) || simulate_more_SBC) {
 ```
 
 ```{r}
-# to check if it worked 
+# sanity check
 nrow(sbc_obj$results$stats)
 nrow(sbc_results_simple$stats)
 nrow(combined_results$stats)
 
 ```
-
-# add 40 and 100 trials
 
 ```{r}
 # might have to reload data
@@ -724,5 +724,224 @@ plot_rank_hist(sbc_results_simple, variables = c("alpha", "b_log", "lambda_logit
     title    = sprintf("SBC Rank Histograms with %d simulations", n_sims),
     subtitle = "Healthy = bars flat within grey band. U-shape = overconfident."
   )
+
+ SBC::plot_ecdf(sbc_results_simple, variables = c("alpha", "b_log", "lambda_logit")) +
+  ggtitle("SBC ECDF: Deviation from Uniformity",
+          subtitle = "Healthy = blue line stays inside the grey ellipse at all points") +
+  theme_classic() +
+  theme(strip.background = element_rect(fill = "gray95", color = "NA"))
+ 
+ plot_ecdf_diff(sbc_results_simple, vvariables = c("alpha", "b_log", "lambda_logit")) +
+  labs(
+    title    = "SBC ECDF Difference",
+    subtitle = "Healthy = blue line stays near zero. Excursions here correlate with the divergence failures shown below."
+  )
+```
+
+```{r}
+# Extract the lightweight stats dataframe — already computed as part of SBC above.
+sbc_stats <- sbc_results_simple$stats
+
+# We plot on the probability scale for interpretability, matching Phase 6a.
+# The 'theta' variable was stored (on probability scale) alongside 'theta_logit'
+# in our generator's variables list.
+recovery_sbc_df <- sbc_stats |>
+  dplyr::filter(variable == "alpha")
+
+# ---------------------------------------------------------------------------
+# Identity plot: true value (x) vs. posterior median (y)
+# ---------------------------------------------------------------------------
+# Under perfect recovery, every point lies on the dashed y = x diagonal.
+# Scatter around the diagonal is unavoidable estimation uncertainty.
+# Systematic curvature (bowing above or below) would reveal directional bias.
+# ---------------------------------------------------------------------------
+p_sbc_recovery <- ggplot(recovery_sbc_df, aes(x = simulated_value, y = median)) +
+
+  # Perfect-recovery reference line
+  geom_abline(intercept = 0, slope = 1,
+              linetype = "dashed", color = "gray50", linewidth = 0.8) +
+
+  # 90% posterior credible intervals
+  # Under correct calibration, ~90% of bars should contain the true value —
+  # which we already verified via the rank histogram above.
+  geom_errorbar(aes(ymin = q5, ymax = q95),
+                width = 0, alpha = 0.25, color = "steelblue") +
+
+  # # Posterior median point estimates
+  geom_point(aes(median), color = "midnightblue", alpha = 0.6, size = 1) +
+
+ # coord_fixed(xlim = c(0, 1), ylim = c(0, 1)) +
+
+  labs(
+    title    = "Parameter Recovery via SBC: Simple model",
+    subtitle = paste0(
+      "N = 1000 simulated universes. True alpha drawn from the prior predictive.\n",
+      "Each point is one universe. Bars are 90% posterior credible intervals."
+    ),
+    x = expression("True " * alpha * " (drawn from prior)"),
+    y = "Posterior Median"
+  ) +
+  theme_classic()
+
+print(p_sbc_recovery)
+
+# ---------------------------------------------------------------------------
+# Quantitative recovery metrics
+# ---------------------------------------------------------------------------
+# Pearson r   : linear correlation between truth and estimate (1.0 = perfect)
+# RMSE        : average estimation error on the probability scale (0 = perfect)
+# coverage90  : empirical 90% CI coverage — should be near 0.90 under calibration
+# ---------------------------------------------------------------------------
+
+recovery_metrics_sbc <- recovery_sbc_df |>
+  dplyr::summarize(
+    Pearson_r  = cor(simulated_value, median),
+    RMSE       = sqrt(mean((simulated_value - median)^2)),
+    coverage90 = mean(simulated_value >= q5 & simulated_value <= q95)
+  )
+
+cat("=== SBC PARAMETER RECOVERY METRICS (alpha) ===\n")
+recovery_metrics_sbc
+```
+```{r}
+recovery_sbc_df <- sbc_stats |>
+  dplyr::filter(variable == "b_log")
+
+# ---------------------------------------------------------------------------
+# Identity plot: true value (x) vs. posterior median (y)
+# ---------------------------------------------------------------------------
+# Under perfect recovery, every point lies on the dashed y = x diagonal.
+# Scatter around the diagonal is unavoidable estimation uncertainty.
+# Systematic curvature (bowing above or below) would reveal directional bias.
+# ---------------------------------------------------------------------------
+p_sbc_recovery <- ggplot(recovery_sbc_df, aes(x = simulated_value, y = median)) +
+
+  # Perfect-recovery reference line
+  geom_abline(intercept = 0, slope = 1,
+              linetype = "dashed", color = "gray50", linewidth = 0.8) +
+
+  # 90% posterior credible intervals
+  # Under correct calibration, ~90% of bars should contain the true value —
+  # which we already verified via the rank histogram above.
+  geom_errorbar(aes(ymin = q5, ymax = q95),
+                width = 0, alpha = 0.25, color = "steelblue") +
+
+  # # Posterior median point estimates
+  geom_point(aes(median), color = "midnightblue", alpha = 0.6, size = 1) +
+
+ # coord_fixed(xlim = c(0, 1), ylim = c(0, 1)) +
+
+  labs(
+    title    = "Parameter Recovery via SBC: Simple model",
+    subtitle = paste0(expression(
+      "N = 1000 simulated universes. True " *beta * "_log drawn from the prior predictive.\n",
+      "Each point is one universe. Bars are 90% posterior credible intervals."
+    )),
+    x = expression("True " * beta * "_log (drawn from prior)"),
+    y = "Posterior Median"
+  ) +
+  theme_classic()
+
+print(p_sbc_recovery)
+
+# ---------------------------------------------------------------------------
+# Quantitative recovery metrics
+# ---------------------------------------------------------------------------
+# Pearson r   : linear correlation between truth and estimate (1.0 = perfect)
+# RMSE        : average estimation error on the probability scale (0 = perfect)
+# coverage90  : empirical 90% CI coverage — should be near 0.90 under calibration
+# ---------------------------------------------------------------------------
+
+recovery_metrics_sbc <- recovery_sbc_df |>
+  dplyr::summarize(
+    Pearson_r  = cor(simulated_value, median),
+    RMSE       = sqrt(mean((simulated_value - median)^2)),
+    coverage90 = mean(simulated_value >= q5 & simulated_value <= q95)
+  )
+
+cat("=== SBC PARAMETER RECOVERY METRICS (beta, log scale) ===\n")
+recovery_metrics_sbc
+```
+
+```{r}
+recovery_sbc_df <- sbc_stats |>
+  dplyr::filter(variable == "lambda_logit")
+
+# ---------------------------------------------------------------------------
+# Identity plot: true value (x) vs. posterior median (y)
+# ---------------------------------------------------------------------------
+# Under perfect recovery, every point lies on the dashed y = x diagonal.
+# Scatter around the diagonal is unavoidable estimation uncertainty.
+# Systematic curvature (bowing above or below) would reveal directional bias.
+# ---------------------------------------------------------------------------
+p_sbc_recovery <- ggplot(recovery_sbc_df, aes(x = simulated_value, y = median)) +
+
+  # Perfect-recovery reference line
+  geom_abline(intercept = 0, slope = 1,
+              linetype = "dashed", color = "gray50", linewidth = 0.8) +
+
+  # 90% posterior credible intervals
+  # Under correct calibration, ~90% of bars should contain the true value —
+  # which we already verified via the rank histogram above.
+  geom_errorbar(aes(ymin = q5, ymax = q95),
+                width = 0, alpha = 0.25, color = "steelblue") +
+
+  # # Posterior median point estimates
+  geom_point(aes(median), color = "midnightblue", alpha = 0.6, size = 1) +
+
+ # coord_fixed(xlim = c(0, 1), ylim = c(0, 1)) +
+
+  labs(
+    title    = "Parameter Recovery via SBC: Simple model",
+    subtitle = paste0(expression(
+      "N = 1000 simulated universes. True " *lambda * "_logit drawn from the prior predictive.\n",
+      "Each point is one universe. Bars are 90% posterior credible intervals."
+    )),
+    x = expression("True " *lambda * "_logit (drawn from prior)"),
+    y = "Posterior Median"
+  ) +
+  theme_classic()
+
+print(p_sbc_recovery)
+
+# ---------------------------------------------------------------------------
+# Quantitative recovery metrics
+# ---------------------------------------------------------------------------
+# Pearson r   : linear correlation between truth and estimate (1.0 = perfect)
+# RMSE        : average estimation error on the probability scale (0 = perfect)
+# coverage90  : empirical 90% CI coverage — should be near 0.90 under calibration
+# ---------------------------------------------------------------------------
+
+recovery_metrics_sbc <- recovery_sbc_df |>
+  dplyr::summarize(
+    Pearson_r  = cor(simulated_value, median),
+    RMSE       = sqrt(mean((simulated_value - median)^2)),
+    coverage90 = mean(simulated_value >= q5 & simulated_value <= q95)
+  )
+
+cat("=== SBC PARAMETER RECOVERY METRICS (lambda, logit scale) ===\n")
+recovery_metrics_sbc
+```
+```{r}
+
+```
+
+
+```{r}
+# Extract diagnostics now so they are available for the targeted refit below
+# diags_cp <- sbc_results_simple$backend_diagnostics
+# cp_fail_rate <- mean(diags_cp$n_divergent > 0) * 100
+# 
+# # Divergence count distribution across all 200 universes
+# diags_cp |> 
+#   ggplot(aes(x = n_divergent)) +
+#   geom_histogram(binwidth = 1, fill = "darkred", alpha = 0.8) +
+#   labs(
+#     title = "CP Divergence Counts Across 1000 SBC Universes",
+#     subtitle = sprintf("%.0f%% of universes produced at least one divergence. 
+# Even a single divergence invalidates the geometric guarantee of NUTS.", cp_fail_rate),
+#     x = "Number of Divergent Transitions",
+#     y = "Number of SBC Universes"
+#   )
 ```
 
