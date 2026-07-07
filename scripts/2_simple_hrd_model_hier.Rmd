@@ -1,0 +1,593 @@
+---
+title: "hierarchical model validation"
+author: "Sigrid Bom"
+date: "2026-07-06"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+# 1. Ensure 'pacman' is installed
+if (!require("pacman")) install.packages("pacman")
+
+# 2. Load required packages using pacman for efficient package management - ensures packages are installed if missing, then loads them
+pacman::p_load(
+  tidyverse,    # Core suite for data manipulation (dplyr) and plotting (ggplot2)
+  here,         # For creating robust file paths relative to the project root (optional but good practice)
+  posterior,    # Provides tools for working with posterior distributions
+  cmdstanr,     # The R interface to Stan (via CmdStan)
+  bayesplot,    # Specialized plotting functions for Bayesian models
+  patchwork,    # For easily combining multiple ggplot plots
+  priorsense,   # For automated prior sensitivity analysis
+  SBC,          # Simulation-Based Calibration Checks
+  future,       # Parallel processing
+  furrr,        # Parallel mapping
+  pracma,       # to be used in the probit regression formula
+  cli,
+  devtools,     # to download package from github
+  progressr,     # to get progress bar in SBC
+  remotes,       # to install specific version of ggplot needed to make priorsense dens plot
+  msm
+)
+
+devtools::install_github("hyunjimoon/SBC") # to make SBC
+#progressr::handlers(global = TRUE) 
+#progressr::handlers(c("rstudio", "progress")) # måske bedre??
+
+
+# priorsense requires specific version of ggplot
+#packageVersion("ggplot2")
+install.packages("remotes")
+remotes::install_version("ggplot2", version = "3.5.1")
+
+
+# Set a default theme for ggplot for consistency
+theme_set(theme_classic()) # Use a classic theme with white background
+
+# Define relative paths 
+stan_model_dir <- here("stan")
+stan_results_dir <- here("simmodels")
+sim_data_dir <- here("simdata")
+
+# Create directories if they don't exist (important for first run)
+if (!dir.exists(stan_model_dir)) dir.create(stan_model_dir)
+if (!dir.exists(stan_results_dir)) dir.create(stan_results_dir)
+if (!dir.exists(sim_data_dir)) dir.create(sim_data_dir)
+
+# Define path for saving/loading the fitted model object that includes the generated quantities
+model_file <- file.path(stan_results_dir, "2_simple_hrd_model_hier.rds")
+sbc_path <- file.path(stan_results_dir, "2_simple_hrd_model_hier_sbc.rds")
+
+# Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
+regenerate_simulations <- FALSE 
+simulate_more_SBC = TRUE
+```
+Clean up of code in "hierarchical_hrd_model_sim_and_test.Rmd"
+
+
+# Mathematical formulation
+
+Each agent j {1, ..., J} has an unobserved parameter \theta_j on each trial i, which decides the choice _h_ of agent j on each trial i.
+
+The theta parameter is found through a probit regression, which depends on several parameters including the stimulus level (delta BPM, x), the threshold (alpha), the slope (beta) and the lapse rate (lambda). All the parameters which are used to calculate theta are population level parameters, which means that they are drawn from a distrubition with a mean (mu) and standard deviation (sigma).
+
+$$
+h_i,_j \sim Bernoulli (\theta_i) \\
+ \theta_i = \lambda + (1-2*\lambda)*(0.5+0.5*erf(\frac{x-\alpha}{\beta*\sqrt{2}}))
+$$
+The latent parameters are thought to be distributed as follows:
+$$
+\alpha_j \sim Normal(\mu_\alpha, \sigma_\alpha) \\
+\beta log_j \sim Normal(\mu_\beta, \sigma_\beta) \\
+\lambda  logit_j \sim Normal (\mu_\lambda, \sigma_\lambda)
+$$
+Overview of hyperparameters:
+$$
+\mu_\alpha \sim Normal(-10,7) \\
+\sigma_\alpha \sim Exponential(10) \\
+
+\mu_\beta log \sim Normal(2.5,0.4) \\
+\sigma_\beta log \sim Exponential(0.4)\\
+
+\mu_\lambda logit \sim Normal(-3,0.4) \\
+\sigma_\lambda logit \sim Exponential(0.4) \\
+$$
+
+Because beta needs to be positive, we sample it in the logarithmic space and then transform it back after sampling by exponentiating it. 
+Similarly, we want lambda to be a small positive number, so we take the inverse logit of lambda and multiply it by 0.5.
+
+Transformed parameters:
+$$
+\beta_j = exp(\beta log_j) \\
+\lambda_j = 0.5* \frac{1}{(1+exp(-\lambda logit_j))}
+$$
+
+```{r}
+# define functions
+
+# probit regression - psychometric function
+ probit_regression <- function(x, alpha, beta, lambda) {
+  lambda + (1 - 2 * lambda) * (0.5+0.5*pracma::erf((x-alpha)/(beta*sqrt(2))))
+ }
+
+# inverse logit
+inv_logit<-function(x){
+  y=1/(1+exp(-x))
+  return(y)
+}
+```
+
+
+# 1. Generating model
+
+```{r}
+simulate_hierarchical_hrd_data <- function(n_agent = 60,
+                                           n_trials = 40,
+                                           mu_alpha = NULL,
+                                           sigma_alpha = NULL,
+                                           mu_b_log = NULL,
+                                           sigma_b_log = NULL,
+                                           mu_lambda_logit = NULL,
+                                           sigma_lambda_logit = NULL,
+                                           seed = NULL
+                                           ){
+ 
+  if (!is.null(seed)) set.seed(seed)    
+  
+  # 1. sample population hyperparameters (if not provided)
+  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 15) # skal outputte omkring -10  # ændret fra 7 til 15
+  if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/10) # skal outputte omkring 10
+  
+  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5 
+  if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.4) # skal outputte omrking 0.4 
+  
+  if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4) # skal være omrking -3
+  if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.4) #skal outputte omkring 0.4
+  
+  # 1.5 sample individual parameter values using hyper parameter values from population level
+  
+  data_sim = map_dfr(1:n_agent, ~ {
+    # 1. sample true parameters per agent
+    alpha         <- rnorm(1, mu_alpha, sigma_alpha)
+    b_log         <- rnorm(1, mu_b_log, sigma_b_log)
+    beta          <- exp(b_log)
+    lambda_logit <- rnorm(1, mu_lambda_logit, sigma_lambda_logit)
+    lambda       <- 0.5 * inv_logit(lambda_logit)
+  
+    # 2. sample stim
+    deltaBPM <- msm::rtnorm(n_trials, mean = alpha, sd = 2 * beta, lower = -50, upper = 50) # truncated normal # is it a bad thing to depend the stimuli on the sampled parameters? also should this be different for each participant like it is now?
+  
+    # 3. calculate theta and choice
+    theta_list <- probit_regression(x = deltaBPM, alpha = alpha, beta = beta, lambda = lambda)
+    choice = rbinom(n=n_trials, size = 1, prob = theta_list) 
+  
+    # 4. return a tibble for each agent
+    tibble(
+      n_agent   = .x,
+      n_trials,
+      alpha,
+      mu_alpha,
+      sigma_alpha,
+      beta,
+      mu_b_log,
+      sigma_b_log,
+      lambda,
+      mu_lambda_logit,
+      sigma_lambda_logit,
+      deltaBPM,
+      theta = theta_list,
+      choice
+    )
+})
+  
+ return(data_sim) 
+}
+
+```
+
+
+```{r}
+
+# need to set seed to get same response every time
+
+hier_data = simulate_hierarchical_hrd_data(seed = 123) 
+
+hier_data
+```
+
+```{r}
+hier_data %>% ggplot() + 
+  aes(x = deltaBPM) + 
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Stim",
+    y = "Density"
+  )
+
+# plotting the probabilities of answering 'faster'
+hier_data %>%
+  ggplot(aes(x = theta))  +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30,
+                 colour = "black",
+                 fill = "grey80") +
+  geom_density(linewidth = 1) +
+  labs(
+    x = "Probability of answering 'faster'",
+    y = "Density"
+  )
+
+
+hier_data %>% 
+  ggplot() +
+  aes(deltaBPM, theta, color = n_agent) +
+  geom_jitter() +
+  labs(
+    x = "stimulus intensity",
+    y = "probability of answering 'faster'",
+    title = "HRD: simulated data for 60 agents with 40 trials"
+  ) + coord_cartesian(xlim=c(-80,80)) # obs akser
+
+```
+
+
+```{r fig.width=10, fig.height=5}
+# visualise simulated data (choices)
+
+hier_data %>% filter(n_agent %in% 1:5) %>% 
+  ggplot() +
+  aes(deltaBPM, theta, color = as.factor(n_agent)) +
+  geom_jitter() +
+  labs(
+    x = "stimulus intensity",
+    y = "probability of answering 'faster'",
+    title = "HRD: simulated data for 60 agents with 40 trials"
+  )  + facet_wrap(~n_agent) + 
+  coord_cartesian(xlim=c(-100,100)) # obs akser
+
+
+```
+
+# Prior predictive checks - pre stan
+
+```{r}
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agent = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, alpha) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = alpha)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+ # scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - alpha",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
+
+
+# BETA
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agent = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, beta) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = beta)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+  scale_x_continuous(limits = c(0, 40)) + #, breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - beta",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
+
+
+
+# LAMBDA
+# Generate 12 distinct "universes" from the priors
+prior_sims <- map_dfr(1:12, function(sim_id) {
+  # We use a fixed seed per universe for stable workflow mapping
+  sim_data <- simulate_hierarchical_hrd_data(
+    n_agent = 100, 
+    n_trials = 1, # Only need 1 trial to extract parameters
+    seed = sim_id * 10 
+  )
+  
+  sim_data |> 
+    distinct(n_agent, lambda) |> 
+    mutate(simulation_id = paste("Prior Universe", sim_id))
+})
+
+# Visualize the generative plausibility
+ggplot(prior_sims, aes(x = lambda)) +
+  geom_density(fill = "steelblue", alpha = 0.5, color = NA) +
+  facet_wrap(~simulation_id, ncol = 4) +
+  scale_x_continuous(limits = c(0, 0.1)) + #, breaks = c(0, 0.5, 1)) +
+  labs(
+    title = "Prior Predictive Check: Implied Population Distributions - lambda",
+    subtitle = "Healthy = populations differ? Each panel is one prior universe.",
+    x = "Agent Bias (Probability Scale)",
+    y = "Density"
+  )
+```
+
+
+## Getting into stan
+
+```{r}
+# compile model
+file = file.path(stan_model_dir, 'simple_model_hrd_hierarchical.stan')
+model <- cmdstan_model(
+  file)
+
+# make data stan friendly i.e. in list form 
+hier_stan_data <- list(
+  N = nrow(hier_data),
+  S = 60,
+  subj = hier_data$n_agent,
+  dBPM = hier_data$deltaBPM,
+  choice = hier_data$choice,
+  prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
+  prior_mu_alpha_scale         =  15, #changed 6/7 from 7 to 15
+  prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
+  prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
+  prior_mu_b_log_scale          =  0.4,
+  prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
+  prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+  prior_mu_lambda_logit_scale   =  0.4,
+  prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4
+  run_diagnostics = 0L # not needed now 
+)
+
+str(hier_stan_data)
+```
+3. Sample
+
+```{r}
+# check if model has been run already
+run_model <- regenerate_simulations || !file.exists(model_file)
+
+if (!run_model) {
+  fit <- readRDS(model_file)
+}
+
+if (run_model) {
+  start_time <- Sys.time()
+
+  pf <- model$pathfinder(data = hier_stan_data, num_paths = 10, draws = 400, psis_resample=FALSE)
+
+  fit <- model$sample(
+    data = hier_stan_data,
+    init = pf,
+    seed = 123,
+    chains = 4,
+    parallel_chains = 4,
+    #threads_per_chain = 4,
+    iter_warmup = 500,
+    iter_sampling = 1000,
+    refresh = 500#,
+   # show_messages= FALSE
+  )
+
+  end_time <- Sys.time()
+  time_equal <- end_time - start_time
+  print(time_equal)
+  
+  fit$save_object(file = model_file)
+}
+```
+
+Check diagnostics
+
+```{r}
+# 1. Check for Divergent Transitions
+diagnostics <- fit$diagnostic_summary()
+cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collapse = ", "), "\n")
+
+```
+
+```{r}
+# 2. Check R-hat and ESS metrics
+fit_summary <- fit$summary(variables = c("mu_alpha", "mu_b_log", "mu_lambda_logit"))
+fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
+```
+
+
+
+
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - alpha
+draws_df <- as_draws_df(fit$draws())
+
+# Drop variables that are all NA (run_diagnostics = 0 quantities)
+draws_df_clean <- draws_df |>
+  select(where(~ !all(is.na(.x))))
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df_clean, pars = "mu_alpha") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df_clean, pars = "mu_alpha", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+
+```{r}
+# 3. Visual Checks (Trace and Rank Plots) - beta
+
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df_clean, pars = "mu_b_log") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df_clean, pars = "mu_b_log", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+```{r}
+# A healthy trace plot is well-mixed with no wandering
+p_trace <- bayesplot::mcmc_trace(draws_df_clean, pars = "mu_lambda_logit") + 
+  theme_classic() + 
+  ggtitle("Trace Plot", 
+          subtitle = "Healthy = all chains overlap and fluctuate around the same stable band")
+
+# A healthy rank histogram has uniform bars across all chains
+p_rank <- bayesplot::mcmc_rank_overlay(draws_df_clean, pars = "mu_lambda_logit", ref_line = TRUE) + 
+  theme_classic() + 
+  ggtitle("Trank plot", subtitle = "Healthy = chains interleave uniformly around the reference line — no chain dominates any rank band")
+
+p_trace / p_rank
+```
+
+
+```{r}
+# then get generated quantities
+fit_gq <- model$generate_quantities(
+  fitted_params = fit,
+  data = list(
+    N = nrow(hier_data),
+    S = 60,
+    subj = hier_data$n_agent,
+    dBPM = hier_data$deltaBPM,
+    choice = hier_data$choice,
+    prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
+    prior_mu_alpha_scale         =  15,
+    prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
+    prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
+    prior_mu_b_log_scale          =  0.4,
+    prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
+    prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+    prior_mu_lambda_logit_scale   =  0.4,
+    prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4
+    run_diagnostics = 1L
+  )
+)
+```
+
+#2. Prior predictive checks
+
+Do the prior allow only plausible behavior?
+
+
+```{r}
+# Extract the summary statistic calculated from prior predictive simulations
+# 'prior_rep_sum' was calculated within the generated quantities block
+draws_gq <- as_draws_df(fit_gq$draws()) # Ensure we have the draws as a dataframe
+observed_choice <- sum(hier_data$choice) # Total number of 'right' choices in the actual observed data
+
+ppc_prior_ggplot <- ggplot(draws_gq, aes(x = choice_prior_sum)) +
+  # Draw the histogram of the model's prior predictions (light red)
+  geom_histogram(fill = "#ffbaba", color = "#ff5252", bins = 30, alpha = 0.8) +
+  
+  # Add the vertical line for the actual observed data (dark red)
+  geom_vline(xintercept = observed_choice, color = "darkred", linewidth = 1.2) +
+  
+  # Labels and theming
+  ggtitle("Prior Predictive Check: Total 'Faster' Choices",
+          subtitle = "Healthy = histogram spans the full range; observed value (dashed) is not in the tails") +
+  xlab(paste("Total Number of 'Faster' Choices (out of", nrow(hier_data), "trials)")) + 
+  ylab("Frequency") #+ 
+  coord_cartesian(xlim = c(0,100))
+
+ppc_prior_ggplot
+```
+ser ikke godt ud ! 
+
+```{r}
+draws_gq <- as_draws_df(fit_gq$draws())
+
+# Extract alpha_prior and beta_prior for all subjects across draws
+# and compute implied p(faster) at dBPM = 0 for each subject
+draws_gq |>
+  select(starts_with("alpha_prior"), starts_with("beta_prior"), starts_with("lambda_prior")) |>
+  pivot_longer(everything(), names_to = c(".value", "s"),
+               names_pattern = "(alpha_prior|beta_prior|lambda_prior)\\[(\\d+)\\]") |>
+  mutate(p_faster = lambda_prior + (1 - 2 * lambda_prior) * pnorm((0 - alpha_prior) / beta_prior)) |>
+  ggplot(aes(x = p_faster)) +
+  geom_histogram(bins = 50, fill = "#ffbaba", colour = "#ff5252") +
+  xlab("Prior p(faster) at dBPM = 0") +
+  ggtitle("Prior predictive: per-subject p(faster)",
+          subtitle = "Should be roughly uniform across [0,1] for a weakly informative prior")
+```
+
+```{r}
+draws_gq |>
+  select(starts_with("alpha_prior")) |>
+  pivot_longer(everything(), names_to = "subject", values_to = "alpha_prior") |>
+  ggplot(aes(x = alpha_prior)) +
+  geom_histogram(bins = 80, fill = "#ffbaba", colour = "#ff5252") +
+  xlab("Prior alpha (BPM threshold)") +
+  ggtitle("Prior predictive: per-subject threshold",
+          subtitle = "Should cover roughly [-30, +10] BPM for HRD task")
+```
+
+
+```{r}
+draws <- fit_gq$draws("theta_prior_p", format = "matrix")
+
+# Option 1: histogram of ALL theta_prior_p values (collapsed across trials and draws)
+hist(as.vector(draws), breaks = 50, 
+     main = "Prior predictive theta", xlab = "theta", xlim = c(0,1))
+
+# Option 2: plot the mean theta per trial with uncertainty
+theta_mean <- apply(draws, 2, mean)
+theta_lower <- apply(draws, 2, quantile, 0.05)
+theta_upper <- apply(draws, 2, quantile, 0.95)
+
+plot(hier_data$deltaBPM, theta_mean, ylim = c(0,1),
+     xlab = "dBPM", ylab = "theta",
+     main = "Prior predictive psychometric function")
+segments(hier_data$deltaBPM, theta_lower, hier_data$deltaBPM, theta_upper, col = "grey")
+
+# Option 3: plot a random sample of draws as psychometric curves (most informative)
+n_curves <- 50
+sampled <- sample(nrow(draws), n_curves)
+
+plot(NULL, xlim = range(hier_data$deltaBPM), ylim = c(0,1),
+     xlab = "dBPM", ylab = "theta",
+     main = "Prior predictive curves")
+for (i in sampled) {
+  lines(sort(hier_data$deltaBPM), draws[i, order(hier_data$deltaBPM)], col = rgb(0,0,1,0.1))
+}
+```
+
