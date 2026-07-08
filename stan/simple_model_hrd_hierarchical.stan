@@ -137,6 +137,8 @@ model {
   target += normal_lpdf(mu_alpha           | prior_mu_alpha_loc,
                                               prior_mu_alpha_scale);
   target += exponential_lpdf(sigma_alpha   | prior_sigma_alpha_rate);
+  //target += normal_lpdf(sigma_alpha | 0, prior_sigma_alpha_rate);
+
 
   target += normal_lpdf(mu_b_log           | prior_mu_b_log_loc,
                                               prior_mu_b_log_scale);
@@ -202,6 +204,8 @@ generated quantities {
   real mu_alpha_prior            = normal_rng(prior_mu_alpha_loc,
                                               prior_mu_alpha_scale);
   real sigma_alpha_prior         = exponential_rng(prior_sigma_alpha_rate);
+ // real sigma_alpha_prior  = abs(normal_rng(0, prior_sigma_alpha_rate));
+  
   real mu_b_log_prior            = normal_rng(prior_mu_b_log_loc,
                                               prior_mu_b_log_scale);
   real sigma_b_log_prior         = exponential_rng(prior_sigma_b_log_rate);
@@ -245,6 +249,16 @@ generated quantities {
   // streak counts. theta_p alone gives you marginal rates; choice_rep gives
   // you full draws you can compute any statistic on.
 
+  real lprior_mu_alpha;
+  real lprior_mu_b_log;
+  real lprior_mu_lambda_logit;
+  real lprior_sigma_alpha;
+  real lprior_sigma_b_log;
+  real lprior_sigma_lambda_logit;
+  vector[N] theta;
+  array[N] int y_rep;
+  
+
   if (run_diagnostics) {
     for (n in 1:N) {
       s = subj[n];
@@ -254,25 +268,34 @@ generated quantities {
                            * Phi_approx((dBPM[n] - alpha_prior[s]) / beta_prior[s]);
       choice_prior_pred[n] = bernoulli_rng(theta_prior_p[n]); 
 
-  
       // posterior predictive theta (using POSTERIOR subject params)
       theta_p[n] = lambda[s]
                    + (1 - 2 * lambda[s])
-                     * Phi_approx((dBPM[n] - alpha[s]) / beta[s]);
+                     * (0.5+0.5*erf((dBPM[n] - alpha[s]) / (beta[s]*sqrt(2))));
       choice_pred[n] = bernoulli_rng(theta_p[n]);
   
       // pointwise log-likelihood. Required by loo::loo() for PSIS-LOO,
       // LOO-PIT, and loo_compare(). Cheap to compute, costs you nothing if
       // you never use it; expensive to add later (requires refit).
+      
+      theta[n] = lambda[s] + (1 - 2 * lambda[s]) * (0.5+0.5*erf((dBPM[n] - alpha[s]) / (beta[s]*sqrt(2))));
+      y_rep[n] = bernoulli_rng(theta[n]);
       log_lik[n] = bernoulli_lpmf(choice[n] | theta_p[n]);
   
       // posterior predictive checks
       // bayesplot::ppc_*() functions consume this directly.
       choice_rep[n] = bernoulli_rng(theta_p[n]);
     }
+    // summed variables
     choice_prior_sum = sum(choice_prior_pred); // added 29-06
     choice_sum = sum(choice_pred);
 
-
+    lprior_mu_alpha = normal_lpdf(mu_alpha | prior_mu_alpha_loc, prior_mu_alpha_scale);
+    lprior_sigma_alpha = exponential_lpdf(sigma_alpha | prior_sigma_alpha_rate);
+    lprior_mu_b_log = normal_lpdf(mu_b_log | prior_mu_b_log_loc, prior_mu_b_log_scale);
+    lprior_sigma_b_log = exponential_lpdf(sigma_b_log | prior_sigma_b_log_rate);
+    lprior_mu_lambda_logit = normal_lpdf(mu_lambda_logit | prior_mu_lambda_logit_loc, 
+                                                prior_mu_lambda_logit_scale);
+    lprior_sigma_lambda_logit = exponential_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_rate);
   }
 }
