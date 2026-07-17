@@ -2,7 +2,9 @@
 title: "hierarchical model validation"
 author: "Sigrid Bom"
 date: "2026-07-06"
-output: pdf_document
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
@@ -33,15 +35,15 @@ pacman::p_load(
   msm
 )
 
-devtools::install_github("hyunjimoon/SBC") # to make SBC
+#devtools::install_github("hyunjimoon/SBC") # to make SBC
 #progressr::handlers(global = TRUE) 
 #progressr::handlers(c("rstudio", "progress")) # måske bedre??
 
 
 # priorsense requires specific version of ggplot
 #packageVersion("ggplot2")
-install.packages("remotes")
-remotes::install_version("ggplot2", version = "3.5.1")
+#install.packages("remotes")
+#remotes::install_version("ggplot2", version = "3.5.1")
 
 
 # Set a default theme for ggplot for consistency
@@ -58,8 +60,8 @@ if (!dir.exists(stan_results_dir)) dir.create(stan_results_dir)
 if (!dir.exists(sim_data_dir)) dir.create(sim_data_dir)
 
 # Define path for saving/loading the fitted model object that includes the generated quantities
-model_file <- file.path(stan_results_dir, "2_simple_hrd_model_hier_half_normal.rds")
-sbc_path <- file.path(stan_results_dir, "2_simple_hrd_model_hier_sbc.rds")
+model_file <- file.path(stan_results_dir, "2_simple_hrd_model_hier_half_normal_priors.rds")
+sbc_path <- file.path(stan_results_dir, "2_simple_hrd_model_hier_sbc_half_normal_priors.rds")
 
 # Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
 regenerate_simulations <- FALSE 
@@ -78,6 +80,8 @@ inv_logit<-function(x){
   return(y)
 }
 ```
+
+
 Clean up of code in "hierarchical_hrd_model_sim_and_test.Rmd"
 
 # Mathematical formulation
@@ -96,14 +100,12 @@ $$
 \beta log_j \sim Normal(\mu_\beta, \sigma_\beta) \\
 \lambda  logit_j \sim Normal (\mu_\lambda, \sigma_\lambda)
 $$
-Overview of hyperparameters:
+Overview of hyperparameters: (XX Need to update - changed sigma alpha and sigma b_log prior to be half normal)
 $$
 \mu_\alpha \sim Normal(-10,7) \\
 \sigma_\alpha \sim Exponential(10) \\
-
 \mu_\beta log \sim Normal(2.5,0.4) \\
 \sigma_\beta log \sim Exponential(0.4)\\
-
 \mu_\lambda logit \sim Normal(-3,0.4) \\
 \sigma_\lambda logit \sim Exponential(0.4) \\
 $$
@@ -117,39 +119,38 @@ $$
 \lambda_j = 0.5* \frac{1}{(1+exp(-\lambda logit_j))}
 $$
 
-# 1. Generating model
+# 1. Generating model - same as before but now the priors are arguments in the function
 
-```{r generate hier data function}
-simulate_hierarchical_hrd_data <- function(n_agent = 60,
-                                           n_trials = 40,
-                                           mu_alpha = NULL,
-                                           sigma_alpha = NULL,
-                                           mu_b_log = NULL,
-                                           sigma_b_log = NULL,
-                                           mu_lambda_logit = NULL,
-                                           sigma_lambda_logit = NULL,
+```{r}
+simulate_hierarchical_hrd_data <- function(n_agent = NULL,
+                                           n_trials = NULL,
+                                           prior_mu_alpha_loc = NULL,
+                                           prior_mu_alpha_scale = NULL,
+                                           prior_sigma_alpha_loc = NULL,
+                                           prior_sigma_alpha_scale = NULL,
+                                           prior_mu_b_log_loc = NULL,
+                                           prior_mu_b_loc_scale = NULL,
+                                           prior_sigma_b_log_loc = NULL,
+                                           prior_sigma_b_log_scale = NULL,
+                                           prior_mu_lambda_logit_loc = NULL,
+                                           prior_mu_lambda_logit_scale = NULL,
+                                           prior_sigma_lambda_logit_rate = NULL,
                                            seed = NULL
                                            ){
  
-  if (!is.null(seed)) set.seed(seed)    
+  if (!is.null(seed)) set.seed(seed)  # this generates a new seed for every run of the function if the seed is not set. so the only way to get the same results everytime is to set a seed when running the function (like sim_data(..., seed = 1997))
   
   # 1. sample population hyperparameters (if not provided)
-  if (is.null(mu_alpha)) mu_alpha <- rnorm(1, mean = -10, sd = 7) # skal outputte omkring -10  # ændret fra 7 til 15
-  #if (is.null(sigma_alpha)) sigma_alpha <- rexp(1, rate = 1/10) # skal outputte omkring 10
-  # trying half normal prior
-  if (is.null(sigma_alpha)) sigma_alpha <- abs(rnorm(1, mean = 0, sd = 10))
+  mu_alpha <- rnorm(1, mean = prior_mu_alpha_loc, sd = prior_mu_alpha_scale) # skal outputte omkring -10  # ændret fra 7 til 15 - 
+
+  sigma_alpha <- abs(rnorm(1, mean = prior_sigma_alpha_loc, sd = prior_sigma_alpha_scale))
   # skal outputte omkring 10
 
-  #if (is.null(sigma_alpha)) sigma_alpha <- abs(rnorm(1, mean = 0, sd = 10))  # scale = 10
-
+  mu_b_log <- rnorm(1, mean = prior_mu_b_log_loc, sd = prior_mu_b_loc_scale) # skal outputte omkring 2.5 
+  sigma_b_log <- abs(rnorm(1, mean = prior_sigma_b_log_loc, sd = prior_sigma_b_log_scale)) # skal outputte omrking 0.4 
   
-  if (is.null(mu_b_log)) mu_b_log <- rnorm(1, mean = 2.5, sd = 0.4) # skal outputte omkring 2.5 
-  #if (is.null(sigma_b_log)) sigma_b_log <- rexp(1, rate = 1/0.4) # skal outputte omrking 0.4 
-  # trying half normal
-  if (is.null(sigma_b_log)) sigma_b_log <- abs(rnorm(1, mean = 0, sd = 0.3)) # skal outputte omrking 0.4 
-  
-  if (is.null(mu_lambda_logit)) mu_lambda_logit <- rnorm(1, mean = -3, sd = 0.4) # skal være omrking -3
-  if (is.null(sigma_lambda_logit)) sigma_lambda_logit <- rexp(1, rate = 1/0.4) #skal outputte omkring 0.4
+  mu_lambda_logit <- rnorm(1, mean = prior_mu_lambda_logit_loc, sd = prior_mu_lambda_logit_scale) # skal være omrking -3
+  sigma_lambda_logit <- rexp(1, rate = prior_sigma_lambda_logit_rate) #skal outputte omkring 0.4
   
   # 1.5 sample individual parameter values using hyper parameter values from population level
   
@@ -194,17 +195,44 @@ simulate_hierarchical_hrd_data <- function(n_agent = 60,
 
 
 ```{r}
-n_trials = 40 # to be used when plotting 
-
-# need to set seed to get same response every time
-
-hier_data = simulate_hierarchical_hrd_data() 
+hier_data = simulate_hierarchical_hrd_data(n_agent = 60,
+                                           n_trials = 40,
+                                           prior_mu_alpha_loc = -10,
+                                           prior_mu_alpha_scale = 7,
+                                           prior_sigma_alpha_loc = 10,
+                                           prior_sigma_alpha_scale = 3,
+                                           prior_mu_b_log_loc = 2.5,
+                                           prior_mu_b_loc_scale = 0.2,
+                                           prior_sigma_b_log_loc = 0.4,
+                                           prior_sigma_b_log_scale = 0.1,
+                                           prior_mu_lambda_logit_loc = -3,
+                                           prior_mu_lambda_logit_scale = 0.4,
+                                           prior_sigma_lambda_logit_rate = 2.5,
+                                           seed = 1985)
 
 hier_data
 ```
 
-```{r}
+Justification of prior values:
+- We are running the data collection with 60 participants and 40 trials of the HRD. 
+- *priors of mu_alpha*: we know from empirical data that participants tend to underestimate their heartrate with a threshold (alpha) of around -10, i.e., why the mean of the prior_mu_alpha is -10. Naturally, this varies, and the SD of 7 allows for variation. 
+- *priors of sigma_alpha*: we want between-subject variation to allow for positive thresholds, too, why this is set to 15 (quite broad).
 
+with alpha ~N(mu_alpha, sigma_alpha) and mu_alpha = -10, the probability an agent has an alpha > 0 is:
+
+
+```{r}
+1-pnorm(0, mean = -10, sd = 15)
+```
+
+This allows for 25% of agents (i.e., 15 agents out of 60) to have a positive threshold.
+
+- *priors of mu_b_log and sigma_b_log*: 
+beta is exp(b_log) and b_log ~ N(mu_b_log, sigma_b_log) per agent, so we want b_log to output around 2.5 +- 0.8 which we get by setting mu_b_log~ N(2.5, 0.2) and sigma_b_log ~N(0.4,1), so beta = exp(b_log) ranges roughly 5.5 to 27, all giving genuine sigmoid shapes over a ±50 stimulus range instead of degenerate step/flat functions.
+
+
+```{r}
+# plotting simulated data
 hier_data %>% ggplot() + 
   aes(x = deltaBPM) + 
   geom_histogram(aes(y = after_stat(density)),
@@ -260,7 +288,7 @@ hier_data %>% filter(n_agent %in% 1:5) %>%
 
 ```
 
-# Prior predictive checks - pre stan
+# 2. Prior predictive checks - pre stan
 
 ```{r}
 # Generate 12 distinct "universes" from the priors
@@ -269,6 +297,17 @@ prior_sims <- map_dfr(1:12, function(sim_id) {
   sim_data <- simulate_hierarchical_hrd_data(
     n_agent = 100, 
     n_trials = 1, # Only need 1 trial to extract parameters
+    prior_mu_alpha_loc = -10,
+    prior_mu_alpha_scale = 7,
+    prior_sigma_alpha_loc = 10,
+    prior_sigma_alpha_scale = 3,
+    prior_mu_b_log_loc = 2.5,
+    prior_mu_b_loc_scale = 0.2,
+    prior_sigma_b_log_loc = 0.4,
+    prior_sigma_b_log_scale = 0.1,
+    prior_mu_lambda_logit_loc = -3,
+    prior_mu_lambda_logit_scale = 0.4,
+    prior_sigma_lambda_logit_rate = 2.5,
     seed = sim_id * 10 
   )
   
@@ -296,7 +335,18 @@ prior_sims <- map_dfr(1:12, function(sim_id) {
   # We use a fixed seed per universe for stable workflow mapping
   sim_data <- simulate_hierarchical_hrd_data(
     n_agent = 100, 
-    n_trials = 1, # Only need 1 trial to extract parameters
+    n_trials = 1, 
+    prior_mu_alpha_loc = -10,
+    prior_mu_alpha_scale = 7,
+    prior_sigma_alpha_loc = 10,
+    prior_sigma_alpha_scale = 3,
+    prior_mu_b_log_loc = 2.5,
+    prior_mu_b_loc_scale = 0.2,
+    prior_sigma_b_log_loc = 0.4,
+    prior_sigma_b_log_scale = 0.1,
+    prior_mu_lambda_logit_loc = -3,
+    prior_mu_lambda_logit_scale = 0.4,
+    prior_sigma_lambda_logit_rate = 2.5,
     seed = sim_id * 10 
   )
   
@@ -325,7 +375,18 @@ prior_sims <- map_dfr(1:12, function(sim_id) {
   # We use a fixed seed per universe for stable workflow mapping
   sim_data <- simulate_hierarchical_hrd_data(
     n_agent = 100, 
-    n_trials = 1, # Only need 1 trial to extract parameters
+    n_trials = 1, 
+    prior_mu_alpha_loc = -10,
+    prior_mu_alpha_scale = 7,
+    prior_sigma_alpha_loc = 10,
+    prior_sigma_alpha_scale = 3,
+    prior_mu_b_log_loc = 2.5,
+    prior_mu_b_loc_scale = 0.2,
+    prior_sigma_b_log_loc = 0.4,
+    prior_sigma_b_log_scale = 0.1,
+    prior_mu_lambda_logit_loc = -3,
+    prior_mu_lambda_logit_scale = 0.4,
+    prior_sigma_lambda_logit_rate = 2.5,
     seed = sim_id * 10 
   )
   
@@ -347,7 +408,6 @@ ggplot(prior_sims, aes(x = lambda)) +
   )
 ```
 
-
 ## Getting into stan
 
 ```{r}
@@ -364,23 +424,23 @@ hier_stan_data <- list(
   dBPM = hier_data$deltaBPM,
   choice = hier_data$choice,
   prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
-  prior_mu_alpha_scale         =  7, #changed 6/7 from 7 to 15
-  #prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
-  prior_sigma_alpha_scale      = 10, 
-  #prior_sigma_alpha_rate        =  5,    # E[sigma_alpha] = 1/rate = 10 BPM
-  prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
-  prior_mu_b_log_scale          =  0.4,
-  #prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
-  prior_sigma_b_log_scale       = 0.3,
-  prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
-  prior_mu_lambda_logit_scale   =  0.4,
-  prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4
+  prior_mu_alpha_scale         = 7, #changed 6/7 from 7 to 15
+  prior_sigma_alpha_loc        = 10,
+  prior_sigma_alpha_scale      = 3,
+  prior_mu_b_log_loc           = 2.5,    # exp(2.5) ~ 12 BPM slope
+  prior_mu_b_log_scale         = 0.2,
+  prior_sigma_b_log_loc        = 0.4,
+  prior_sigma_b_log_scale      = 0.1,
+  prior_mu_lambda_logit_loc    = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+  prior_mu_lambda_logit_scale  = 0.4,
+  prior_sigma_lambda_logit_rate = 2.5,    # E[sigma_lambda_logit] = 0.4
   run_diagnostics = 0L # not needed now 
 )
 
+
 str(hier_stan_data)
 ```
-3. Sample
+# Sample
 
 ```{r}
 save_model = TRUE
@@ -420,7 +480,7 @@ if (run_model) {
 }
 ```
 
-Check diagnostics
+## Check diagnostics
 
 ```{r}
 # 1. Check for Divergent Transitions
@@ -491,7 +551,7 @@ p_rank <- bayesplot::mcmc_rank_overlay(draws_df_clean, pars = "mu_lambda_logit",
 
 p_trace / p_rank
 ```
-
+## Get generated quantities to prior predictive and posterior predictive
 
 ```{r}
 # then get generated quantities
@@ -504,22 +564,22 @@ fit_gq <- model$generate_quantities(
     dBPM = hier_data$deltaBPM,
     choice = hier_data$choice,
     prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
-    prior_mu_alpha_scale         =  15,
-    #prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
-    prior_sigma_alpha_scale       = 10, 
-    prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
-    prior_mu_b_log_scale          =  0.4,
-    #prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
-    prior_sigma_b_log_scale       = 0.3,
-    prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
-    prior_mu_lambda_logit_scale   =  0.4,
-    prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4
-    run_diagnostics = 1L
+    prior_mu_alpha_scale         = 7, #changed 6/7 from 7 to 15
+    prior_sigma_alpha_loc        = 10,
+    prior_sigma_alpha_scale      = 3,
+    prior_mu_b_log_loc           = 2.5,    # exp(2.5) ~ 12 BPM slope
+    prior_mu_b_log_scale         = 0.2,
+    prior_sigma_b_log_loc        = 0.4,
+    prior_sigma_b_log_scale      = 0.1,
+    prior_mu_lambda_logit_loc    = -3,      # 0.5 * inv_logit(-3) ~ 0.024
+    prior_mu_lambda_logit_scale  = 0.4,
+    prior_sigma_lambda_logit_rate = 2.5,    # E[sigma_lambda_logit] = 0.4
+    run_diagnostics = 1L # NOW we want diagnostics
   )
 )
 ```
 
-#2. Prior predictive checks
+# 2. Prior predictive checks - using stan
 
 Do the prior allow only plausible behavior?
 
@@ -627,9 +687,11 @@ for (i in sampled) {
 }
 ```
 
-#3. Posterior predictive checks
+# 3. Posterior predictive checks
 
 ```{r}
+n_trials = 40
+
 # Extract posterior predictive simulations from the fitted object
 # This matrix has dimensions: [number_of_draws, number_of_trials]
 choice_pred <- fit_gq$draws("choice_pred", format = "matrix")
@@ -756,6 +818,8 @@ p_ppc_max_run <- ggplot(ppc_run_df, aes(x = Replicated_Max_Run, fill = Distribut
 
 print(p_ppc_max_run)
 ```
+# 4. Prior-posterior update check
+
 ```{r}
 # 4a. Look at the Posterior Estimate - alpha
 ggplot(draws_df) +
@@ -860,182 +924,178 @@ p_priorsense_dens
 # p_priorsense_dens
 ```
 
-# SBC
+# 6. Parameter recovery and SBC
 
-```{r}
-# Parallel SBC across simulations (SBC auto-balances cores per fit)
-future::plan(multisession, workers = future::availableCores())
-options(SBC.min_chunk_size = 1)
-cat(sprintf("Parallel SBC: %d workers\n", future::nbrOfWorkers()))
+SBC is heavy duty stuff. The SBC has therefore been run at a virtual cluster.
 
-# Define the strict SBC generator wrapper
-generate_sbc_dataset <- function(n_agent = 60, n_trials = 40) {
-  
-  # 1. Simulate the universe (draws hyperparams and agent params from priors)
-  sim_data <- simulate_hierarchical_hrd_data(
-    n_agent = n_agent, 
-    n_trials = n_trials
-  )
-  
-  sim_data <- sim_data %>% 
-    rename(
-      S = n_agent,
-      N = n_trials
-      )
-  
-  # 2. Extract the true generative hyperparameters
-  mu_alpha_true <- sim_data$mu_alpha[1]
-  sigma_alpha_true <- sim_data$sigma_alpha[1]
-  mu_b_log_true <- sim_data$mu_b_log[1]
-  sigma_b_log_true <- sim_data$sigma_b_log[1]
-  mu_lambda_logit_true <- sim_data$mu_lambda_logit[1]
-  sigma_lambda_logit_true <- sim_data$sigma_lambda_logit[1]
-  #deltaBPM <- sim_data$deltaBPM
-  
-  # 3. Extract the true individual latent parameters (must preserve agent order)
-  theta_true <- sim_data |> 
-    distinct(S, theta) |> 
-    arrange(S) |> 
-    pull(theta)
-  
-  # 4. Prepare the strictly typed list for CmdStanR
-  stan_data <- list(
-      N = nrow(sim_data),
-      S = n_agent,
-      subj = sim_data$S,
-      dBPM = sim_data$deltaBPM,
-      choice = sim_data$choice,
-      prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean
-      prior_mu_alpha_scale         =  7,
-      prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM
-      prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope
-      prior_mu_b_log_scale          =  0.4,
-      prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4
-      prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024
-      prior_mu_lambda_logit_scale   =  0.4,
-      prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4
-      run_diagnostics = 0L # not needed now 
-)
+<!-- ```{r} -->
+<!-- # Parallel SBC across simulations (SBC auto-balances cores per fit) -->
+<!-- future::plan(multisession, workers = future::availableCores()) -->
+<!-- options(SBC.min_chunk_size = 1) -->
+<!-- cat(sprintf("Parallel SBC: %d workers\n", future::nbrOfWorkers())) -->
 
-#str(hier_stan_data)
-  
-  #stan_data <- prep_stan_data(sim_data, sim_data$n_agent)
-  
-  # 5. Return the exact structure required by the SBC package
-  list(
-    variables = list(mu_alpha = mu_alpha_true, 
-                     sigma_alpha = sigma_alpha_true,
-                     mu_b_log = mu_b_log_true, 
-                     sigma_b_log = sigma_b_log_true,
-                     mu_lambda_logit = mu_lambda_logit_true,
-                     sigma_lambda_logit = sigma_lambda_logit_true
-                     ),
-    generated = stan_data
-  )
-  # list(
-  #   variables = list(
-  #     mu_theta = mu_true,
-  #     sigma_theta = sigma_true,
-  #     theta_logit = theta_true
-  #   ),
-  #   generated = stan_data
-  # )
-}
-```
+<!-- # Define the strict SBC generator wrapper -->
+<!-- generate_sbc_dataset <- function(n_agent = 60, n_trials = 40) { -->
 
-```{r}
-file = file.path(stan_model_dir, 'simple_model_hrd_hierarchical.stan')
-model <- cmdstan_model(
-  file)
+<!--   # 1. Simulate the universe (draws hyperparams and agent params from priors) -->
+<!--   sim_data <- simulate_hierarchical_hrd_data( -->
+<!--     n_agent = n_agent, -->
+<!--     n_trials = n_trials -->
+<!--   ) -->
 
-backend <- SBC::SBC_backend_cmdstan_sample(
-  model,
-  chains = 4,
-  parallel_chains = 4,
-  iter_warmup = 1000,
-  iter_sampling = 2000,
-  refresh = 0
-)
-```
+<!--   sim_data <- sim_data %>% -->
+<!--     rename( -->
+<!--       S = n_agent, -->
+<!--       N = n_trials -->
+<!--       ) -->
 
-```{r}
-# Register the generator function
-generator <- SBC::SBC_generator_function(generate_sbc_dataset, n_agent = 60, n_trials = 40)
+<!--   # 2. Extract the true generative hyperparameters -->
+<!--   mu_alpha_true <- sim_data$mu_alpha[1] -->
+<!--   sigma_alpha_true <- sim_data$sigma_alpha[1] -->
+<!--   mu_b_log_true <- sim_data$mu_b_log[1] -->
+<!--   sigma_b_log_true <- sim_data$sigma_b_log[1] -->
+<!--   mu_lambda_logit_true <- sim_data$mu_lambda_logit[1] -->
+<!--   sigma_lambda_logit_true <- sim_data$sigma_lambda_logit[1] -->
+<!--   #deltaBPM <- sim_data$deltaBPM -->
 
-# Execute simulation based calibration
-sbc_datasets <- SBC::generate_datasets(generator, 2)
+<!--   # 3. Extract the true individual latent parameters (must preserve agent order) -->
+<!--   theta_true <- sim_data |> -->
+<!--     distinct(S, theta) |> -->
+<!--     arrange(S) |> -->
+<!--     pull(theta) -->
 
+<!--   # 4. Prepare the strictly typed list for CmdStanR -->
+<!--   stan_data <- list( -->
+<!--       N = nrow(sim_data), -->
+<!--       S = n_agent, -->
+<!--       subj = sim_data$S, -->
+<!--       dBPM = sim_data$deltaBPM, -->
+<!--       choice = sim_data$choice, -->
+<!--       prior_mu_alpha_loc           = -10,     # HRD subjects systematically underestimate -> negative mean -->
+<!--       prior_mu_alpha_scale         =  7, -->
+<!--       prior_sigma_alpha_rate        =  0.1,    # E[sigma_alpha] = 1/rate = 10 BPM -->
+<!--       prior_mu_b_log_loc           =  2.5,    # exp(2.5) ~ 12 BPM slope -->
+<!--       prior_mu_b_log_scale          =  0.4, -->
+<!--       prior_sigma_b_log_rate        =  2.5,    # E[sigma_b_log] = 1/2.5 = 0.4 -->
+<!--       prior_mu_lambda_logit_loc     = -3,      # 0.5 * inv_logit(-3) ~ 0.024 -->
+<!--       prior_mu_lambda_logit_scale   =  0.4, -->
+<!--       prior_sigma_lambda_logit_rate =  2.5,    # E[sigma_lambda_logit] = 0.4 -->
+<!--       run_diagnostics = 0L # not needed now -->
+<!-- ) -->
 
+<!-- #str(hier_stan_data) -->
 
-start_time <-  Sys.time()
+<!--   #stan_data <- prep_stan_data(sim_data, sim_data$n_agent) -->
 
-sbc_results <- SBC::compute_SBC(sbc_datasets, backend, keep_fits = FALSE)
+<!--   # 5. Return the exact structure required by the SBC package -->
+<!--   list( -->
+<!--     variables = list(mu_alpha = mu_alpha_true, -->
+<!--                      sigma_alpha = sigma_alpha_true, -->
+<!--                      mu_b_log = mu_b_log_true, -->
+<!--                      sigma_b_log = sigma_b_log_true, -->
+<!--                      mu_lambda_logit = mu_lambda_logit_true, -->
+<!--                      sigma_lambda_logit = sigma_lambda_logit_true -->
+<!--                      ), -->
+<!--     generated = stan_data -->
+<!--   ) -->
+<!--   # list( -->
+<!--   #   variables = list( -->
+<!--   #     mu_theta = mu_true, -->
+<!--   #     sigma_theta = sigma_true, -->
+<!--   #     theta_logit = theta_true -->
+<!--   #   ), -->
+<!--   #   generated = stan_data -->
+<!--   # ) -->
+<!-- } -->
+<!-- ``` -->
 
-end_time <- Sys.time()
-time_equal <- end_time - start_time
-print(time_equal)
-```
+<!-- ```{r} -->
+<!-- file = file.path(stan_model_dir, 'simple_model_hrd_hierarchical.stan') -->
+<!-- model <- cmdstan_model( -->
+<!--   file) -->
 
-```{r}
-# laod file from genome folder
-sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607152013_hierarchical_hrd_model_2000_sims_60subj_40trials_194m_53s_half_normal_COMBINED.rds"))
-```
+<!-- backend <- SBC::SBC_backend_cmdstan_sample( -->
+<!--   model, -->
+<!--   chains = 4, -->
+<!--   parallel_chains = 4, -->
+<!--   iter_warmup = 1000, -->
+<!--   iter_sampling = 2000, -->
+<!--   refresh = 0 -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # Register the generator function -->
+<!-- generator <- SBC::SBC_generator_function(generate_sbc_dataset, n_agent = 60, n_trials = 40) -->
+
+<!-- # Execute simulation based calibration -->
+<!-- sbc_datasets <- SBC::generate_datasets(generator, 2) -->
 
 
 
-```{r}
-#sbc_obj <-readRDS(file.path(stan_results_dir, "2607101500_hierarchical_hrd_model_20_sims_60subj_40trials_5m_47s.rds"))
-sbc_results <- sbc_obj$results
-sbc_results
-# no divergent transitions
-# rhat is ok
-# ess_bulk and ss_tail are good too
-sbc_results$backend_diagnostics
+<!-- start_time <-  Sys.time() -->
 
-hist(sbc_results$stats$rhat)
+<!-- sbc_results <- SBC::compute_SBC(sbc_datasets, backend, keep_fits = FALSE) -->
 
-sbc_results$stats
-sbc_datasets = sbc_obj$datasets
-```
+<!-- end_time <- Sys.time() -->
+<!-- time_equal <- end_time - start_time -->
+<!-- print(time_equal) -->
+<!-- ``` -->
 
-```{r}
-ess_check <- sbc_results$stats |>
-  distinct(sim_id, variable, ess_bulk, ess_tail) |>
-  group_by(sim_id) |>
-  summarise(min_ess_bulk = min(ess_bulk, na.rm=TRUE),
-            min_ess_tail = min(ess_tail, na.rm=TRUE), .groups="drop") |>
-  arrange(min_ess_tail)
-
-print(head(ess_check, 5))
-```
-
-```{r}
-low_ess_ids <- c(8, 42, 14, 10, 33)
-
-true_params_for_low_ess <- as.data.frame(sbc_datasets$variables) |>
-  mutate(sim_id = row_number()) |>
-  filter(sim_id %in% low_ess_ids)
-
-print(true_params_for_low_ess)
-```
+<!-- ```{r} -->
+<!-- # laod file from genome folder - virtual cluster -->
+<!-- sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607152013_hierarchical_hrd_model_2000_sims_60subj_40trials_194m_53s_half_normal_COMBINED.rds")) -->
+<!-- ``` -->
 
 
 
+<!-- ```{r} -->
+<!-- #sbc_obj <-readRDS(file.path(stan_results_dir, "2607101500_hierarchical_hrd_model_20_sims_60subj_40trials_5m_47s.rds")) -->
+<!-- sbc_results <- sbc_obj$results -->
+<!-- sbc_results -->
+<!-- # no divergent transitions -->
+<!-- # rhat is ok -->
+<!-- # ess_bulk and ss_tail are good too -->
+<!-- sbc_results$backend_diagnostics -->
 
+<!-- hist(sbc_results$stats$rhat) -->
 
+<!-- sbc_results$stats -->
+<!-- sbc_datasets = sbc_obj$datasets -->
+<!-- ``` -->
 
+<!-- ```{r} -->
+<!-- # check ESS -->
+<!-- ess_check <- sbc_results$stats |> -->
+<!--   distinct(sim_id, variable, ess_bulk, ess_tail) |> -->
+<!--   group_by(sim_id) |> -->
+<!--   summarise(min_ess_bulk = min(ess_bulk, na.rm=TRUE), -->
+<!--             min_ess_tail = min(ess_tail, na.rm=TRUE), .groups="drop") |> -->
+<!--   arrange(min_ess_tail) -->
 
-```{r}
+<!-- print(head(ess_check, 5)) -->
+<!-- ``` -->
 
-bad_idx <- which(sbc_results$backend_diagnostics$n_divergent > 0 | sbc_results$default_diagnostics$max_rhat> 1.01)
-sbc_datasets$variables[bad_idx, ]
+<!-- ```{r} -->
+<!-- low_ess_ids <- c(8, 42, 14, 10, 33) -->
 
-```
+<!-- true_params_for_low_ess <- as.data.frame(sbc_datasets$variables) |> -->
+<!--   mutate(sim_id = row_number()) |> -->
+<!--   filter(sim_id %in% low_ess_ids) -->
 
+<!-- print(true_params_for_low_ess) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- bad_idx <- which(sbc_results$backend_diagnostics$n_divergent > 0 | sbc_results$default_diagnostics$max_rhat> 1.01) -->
+<!-- sbc_datasets$variables[bad_idx, ] -->
+
+<!-- ``` -->
 
 ```{r SBC results}
-# laod file from genome folder
-sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607152013_hierarchical_hrd_model_2000_sims_60subj_40trials_194m_53s_half_normal_COMBINED.rds"))
+# laod file from genome folder - virtual cluster
+sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607171202_hierarchical_hrd_model_3000iter_10thin_2000sims_60subj_40trials_100m_14s_half_normal_COMBINED.rds"))
 
 results <- sbc_obj$results
 
@@ -1048,6 +1108,7 @@ results_backend_diag <- as_tibble(results$backend_diagnostics)
 results_combined_diag <- left_join(results_default_diag, results_backend_diag, by = "sim_id")
 ```
 
+Before we plot the results, we remove the bad fits.
 
 ```{r remove bad fits function}
 #' Remove bad fits from an SBC combined diagnostics tibble
@@ -1072,13 +1133,17 @@ results_combined_diag <- left_join(results_default_diag, results_backend_diag, b
 remove_bad_fits <- function(sbc_obj,
                             results_combined_diag,
                              rhat_threshold = 1.01,
-                             ess_tail_ratio_threshold = 0.5) {
+                             e_bfmi_threshold = 0.2,
+                             min_ess_bulk_threshold = 400,
+                             min_ess_tail_threshold = 400) {
 
   # --- 1. Build the "bad fit" logical condition, one entry per sim_id ---
   is_bad <- (results_combined_diag$max_rhat > rhat_threshold) |
             (results_combined_diag$n_divergent != 0) |
             (results_combined_diag$n_rejects != 0) |
-            (results_combined_diag$min_ess_to_rank < ess_tail_ratio_threshold)
+            (results_combined_diag$min_bfmi <= e_bfmi_threshold) |
+            (results_combined_diag$min_ess_tail < min_ess_tail_threshold) |
+            (results_combined_diag$min_ess_bulk < min_ess_bulk_threshold)
 
   # --- 2. Count and identify the bad sim_ids using sum() and which() ---
   n_total <- nrow(results_combined_diag)
@@ -1105,7 +1170,9 @@ remove_bad_fits <- function(sbc_obj,
         n_high_rhat    = sum(max_rhat > rhat_threshold, na.rm = TRUE),
         n_divergent    = sum(n_divergent != 0, na.rm = TRUE),
         n_rejects      = sum(n_rejects != 0, na.rm = TRUE),
-        n_low_ess_tail = sum(min_ess_to_rank < ess_tail_ratio_threshold, na.rm = TRUE)
+        n_low_bfmi     = sum(min_bfmi <= e_bfmi_threshold, na.rm = TRUE),
+        n_low_ess_tail = sum(min_ess_tail < min_ess_tail_threshold, na.rm = TRUE),
+        n_low_ess_bulk = sum(min_ess_bulk < min_ess_bulk_threshold, na.rm = TRUE)
       )
     cat("\nBreakdown of failure reasons (fits can fail more than one criterion):\n")
     print(breakdown)
@@ -1158,7 +1225,9 @@ remove_bad_fits <- function(sbc_obj,
     new_min_ess_tail = new_min_ess_tail,
     thresholds = list(
       rhat_threshold = rhat_threshold,
-      ess_tail_ratio_threshold = ess_tail_ratio_threshold
+      e_bfmi_threshold = e_bfmi_threshold,
+      min_ess_tail_threshold = min_ess_tail_threshold,
+      min_ess_bulk_threshold = min_ess_bulk_threshold
     )
   )
  
@@ -1183,32 +1252,33 @@ remove_bad_fits <- function(sbc_obj,
 ```{r run remove bad fits function}
 results_clean = remove_bad_fits(results, results_combined_diag)
 ```
+
 ```{r plot settings}
 #plot directories
 sbc_plots_dir = here("plots", "hierarchical_hrd_model", "parameter_recovery_and_SBC")
 
 # SAVE PLOTS?
-save_plots = TRUE
+save_plots = FALSE
 ```
 
 
 ```{r param rec and SBC plots}
 # to be used when plotting
 report <- attr(results_clean, "removed_fits_report")
-report$n_total
-report$pct_bad
-report$n_bad
+n_iterations = sbc_obj$n_iter 
+n_thin = sbc_obj$n_thin # might have to set manually - not all model obj have this
 
 # parameter recovery plot
 p1 <- SBC::plot_sim_estimated(results_clean) + 
   ggtitle(
-  label = "Parameter recovery",
-  subtitle = sprintf("Hierarchical HRD model w. %d fits, of which %.0f bad fits were removed", report$n_total, report$n_bad)
+  label = sprintf("Parameter recovery (%d iter, thin = %d)", n_iterations, n_thin),
+  subtitle = sprintf("Hierarchical HRD model w. %d fits of which %.0f bad fits were removed", report$n_total, report$n_bad)
  ) + 
   labs(x = "simulated value")
 
 if (save_plots){
-  ggsave(filename = sprintf("hier_hrd_param_rec_%d_sims.png", report$n_total), 
+  ggsave(filename = sprintf("hier_hrd_param_rec_%diter_%dthin_%dsims.png", 
+                            n_iterations, n_thin, report$n_total), 
          plot = p1, 
          path = sbc_plots_dir,
          width = 16,
@@ -1223,11 +1293,12 @@ print(p1)
 # rank histogram
 p2 <- SBC::plot_rank_hist(results_clean) + 
   ggtitle(
-  label = "Simulation-based calibration check",
-  subtitle = sprintf("Hierarchical HRD model w. %d fits, of which %.0f bad fits were removed", report$n_total, report$n_bad))
+  label = sprintf("Simulation-based calibration check (%d iter, thin = %d)", n_iterations, n_thin),
+  subtitle = sprintf("Hierarchical HRD model w. %d fits of which %.0f bad fits were removed", report$n_total, report$n_bad))
 
 if (save_plots){
-  ggsave(filename = sprintf("hier_hrd_rank_hist_%d_sims.png", report$n_total), 
+  ggsave(filename = sprintf("hier_hrd_rank_hist_%diter_%dthin_%dsims.png", 
+                            n_iterations, n_thin, report$n_total), 
          plot = p2, 
          path = sbc_plots_dir,
          width = 16,
@@ -1244,13 +1315,15 @@ print(p2)
 
 p3 <- SBC::plot_ecdf(results_clean) + 
   ggtitle(
-  label = "Sample empirical cumulative distribution function (ECDF)",
-  subtitle = sprintf("Hierarchical HRD model w. %d fits, of which %.0f bad fits were removed", report$n_total, report$n_bad) 
+  label = sprintf("Empirical cumulative distribution function (ECDF) (%d iter, thin = %d)", n_iterations, n_thin),
+    
+  subtitle = sprintf("Hierarchical HRD model w. %d fits of which %.0f bad fits were removed", report$n_total, report$n_bad) 
   ) + 
   theme(legend.position = "bottom")
 
 if (save_plots){
-  ggsave(filename = sprintf("hier_hrd_ecdf_%d_sims.png", report$n_total), 
+  ggsave(filename = sprintf("hier_hrd_ecdf_%diter_%dthin_%dsims.png", 
+                            n_iterations, n_thin, report$n_total), 
          plot = p3, 
          path = sbc_plots_dir,
          width = 16,
@@ -1267,15 +1340,16 @@ print(p3)
 
 p4 <- SBC::plot_ecdf_diff(results_clean) + 
   ggtitle(
-  label = "Difference between sampled and theoretical CDF",
-  subtitle = sprintf("Hierarchical HRD model w. %d fits, of which %.0f bad fits were removed", report$n_total, report$n_bad)
+  label = sprintf("Difference between sampled and theoretical CDF (%d iter, thin = %d)", n_iterations, n_thin),
+  subtitle = sprintf("Hierarchical HRD model w. %d fits of which %.0f bad fits were removed", report$n_total, report$n_bad)
   ) + 
     theme(
     legend.position = "bottom"
   )
 
 if (save_plots){
-  ggsave(filename = sprintf("hier_hrd_ecdf_diff_%d_sims.png", report$n_total), 
+  ggsave(filename = sprintf("hier_hrd_ecdf_diff_%diter_%dthin_%dsims.png", 
+                            n_iterations, n_thin, report$n_total), 
          plot = p4, 
          path = sbc_plots_dir,
          width = 16,
@@ -1286,6 +1360,8 @@ if (save_plots){
 }
 
 print(p4)
+
+report$breakdown
 ```
 
 
