@@ -60,11 +60,13 @@ data {
 
   real prior_mu_alpha_loc;
   real<lower=0> prior_mu_alpha_scale;
-  real<lower=0> prior_sigma_alpha_rate;
+    real<lower=0> prior_sigma_alpha_loc;
+  real<lower=0> prior_sigma_alpha_scale;
 
   real prior_mu_b_log_loc;
   real<lower=0> prior_mu_b_log_scale;
-  real<lower=0> prior_sigma_b_log_rate;
+  real<lower=0> prior_sigma_b_log_loc;
+  real<lower=0> prior_sigma_b_log_scale;
 
   real prior_mu_lambda_logit_loc;
   real<lower=0> prior_mu_lambda_logit_scale;
@@ -135,17 +137,17 @@ model {
   // equivalent here, but `target +=` is the form you need if you ever want
   // to manually power-scale priors for sensitivity analysis.
   target += normal_lpdf(mu_alpha           | prior_mu_alpha_loc,
-                                              prior_mu_alpha_scale);
-  target += exponential_lpdf(sigma_alpha   | prior_sigma_alpha_rate);
-  //target += normal_lpdf(sigma_alpha | 0, prior_sigma_alpha_rate);
+                                             prior_mu_alpha_scale);
+  target += normal_lpdf(sigma_alpha        | prior_sigma_alpha_loc, 
+                                             prior_sigma_alpha_scale);
 
 
   target += normal_lpdf(mu_b_log           | prior_mu_b_log_loc,
-                                              prior_mu_b_log_scale);
-  target += exponential_lpdf(sigma_b_log   | prior_sigma_b_log_rate);
-
+                                            prior_mu_b_log_scale);
+  target += normal_lpdf(sigma_b_log        | prior_sigma_b_log_loc, 
+                                             prior_sigma_b_log_scale);
   target += normal_lpdf(mu_lambda_logit    | prior_mu_lambda_logit_loc,
-                                              prior_mu_lambda_logit_scale);
+                                             prior_mu_lambda_logit_scale);
   target += exponential_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_rate);
 
   // ----- subject-level raw priors -----
@@ -203,12 +205,13 @@ generated quantities {
   // you exactly the right number of samples to overlay.
   real mu_alpha_prior            = normal_rng(prior_mu_alpha_loc,
                                               prior_mu_alpha_scale);
-  real sigma_alpha_prior         = exponential_rng(prior_sigma_alpha_rate);
- // real sigma_alpha_prior  = abs(normal_rng(0, prior_sigma_alpha_rate));
+  real sigma_alpha_prior  = abs(normal_rng(prior_sigma_alpha_loc, 
+                                           prior_sigma_alpha_scale));
   
   real mu_b_log_prior            = normal_rng(prior_mu_b_log_loc,
                                               prior_mu_b_log_scale);
-  real sigma_b_log_prior         = exponential_rng(prior_sigma_b_log_rate);
+  real sigma_b_log_prior        = abs(normal_rng(prior_sigma_b_log_loc, 
+                                                 prior_sigma_b_log_scale));
   real mu_lambda_logit_prior     = normal_rng(prior_mu_lambda_logit_loc,
                                               prior_mu_lambda_logit_scale);
   real sigma_lambda_logit_prior  = exponential_rng(prior_sigma_lambda_logit_rate);
@@ -290,12 +293,16 @@ generated quantities {
     choice_prior_sum = sum(choice_prior_pred); // added 29-06
     choice_sum = sum(choice_pred);
 
-    lprior_mu_alpha = normal_lpdf(mu_alpha | prior_mu_alpha_loc, prior_mu_alpha_scale);
-    lprior_sigma_alpha = exponential_lpdf(sigma_alpha | prior_sigma_alpha_rate);
-    lprior_mu_b_log = normal_lpdf(mu_b_log | prior_mu_b_log_loc, prior_mu_b_log_scale);
-    lprior_sigma_b_log = exponential_lpdf(sigma_b_log | prior_sigma_b_log_rate);
+    lprior_mu_alpha = normal_lpdf(mu_alpha | prior_mu_alpha_loc, 
+                                             prior_mu_alpha_scale);
+    lprior_sigma_alpha = normal_lpdf(sigma_alpha | prior_sigma_alpha_loc, 
+                                                   prior_sigma_alpha_scale);
+    lprior_mu_b_log = normal_lpdf(mu_b_log | prior_mu_b_log_loc, 
+                                             prior_mu_b_log_scale);
+    lprior_sigma_b_log = normal_lpdf(sigma_b_log | prior_sigma_b_log_loc, 
+                                                   prior_sigma_b_log_scale);
     lprior_mu_lambda_logit = normal_lpdf(mu_lambda_logit | prior_mu_lambda_logit_loc, 
-                                                prior_mu_lambda_logit_scale);
+                                                          prior_mu_lambda_logit_scale);
     lprior_sigma_lambda_logit = exponential_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_rate);
   }
 }

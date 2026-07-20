@@ -60,12 +60,12 @@ if (!dir.exists(stan_results_dir)) dir.create(stan_results_dir)
 if (!dir.exists(sim_data_dir)) dir.create(sim_data_dir)
 
 # Define path for saving/loading the fitted model object that includes the generated quantities
-model_file <- file.path(stan_results_dir, "2_simple_hrd_model_hier_half_normal_priors.rds")
+#model_file <- file.path(stan_results_dir, "2_simple_hrd_model_hier_half_normal_priors.rds")
 sbc_path <- file.path(stan_results_dir, "2_simple_hrd_model_hier_sbc_half_normal_priors.rds")
 
 # Set to TRUE to rerun everything (takes time!), FALSE to load saved results.
 regenerate_simulations <- FALSE 
-simulate_more_SBC = TRUE
+#simulate_more_SBC = TRUE
 
 # define functions
 
@@ -443,7 +443,14 @@ str(hier_stan_data)
 # Sample
 
 ```{r}
+
+n_iter_model = 3000
+n_thin_model = 5
 save_model = TRUE
+
+# CHECK THIS 
+model_file <- file.path(stan_results_dir, 
+          sprintf("2_simple_hrd_model_hier_%diter_%dthin_half_normal_priors.rds", n_iter_model, n_thin_model))
 
 # check if model has been run already
 run_model <- regenerate_simulations || !file.exists(model_file)
@@ -465,8 +472,9 @@ if (run_model) {
     parallel_chains = 4,
     #threads_per_chain = 4,
     iter_warmup = 500,
-    iter_sampling = 1000,
-    refresh = 500#,
+    iter_sampling = n_iter_model,
+    refresh = 500,
+    thin = n_thin_model
    # show_messages= FALSE
   )
 
@@ -491,13 +499,13 @@ cat("Divergent transitions per chain:", paste(diagnostics$num_divergent, collaps
 
 ```{r}
 # 2. Check R-hat and ESS metrics
-fit_summary <- fit$summary(variables = c("mu_alpha", "mu_b_log", "mu_lambda_logit"))
+fit_summary <- fit$summary(variables = c("mu_alpha", "mu_b_log", "mu_lambda_logit", "sigma_alpha", "sigma_b_log", "sigma_lambda_logit"))
 fit_summary %>% dplyr::select(variable, mean, rhat, ess_bulk, ess_tail)
 
 draws_df <- as_draws_df(fit$draws())
 ```
 
-
+Looks good. 
 
 
 ```{r}
@@ -551,6 +559,86 @@ p_rank <- bayesplot::mcmc_rank_overlay(draws_df_clean, pars = "mu_lambda_logit",
 
 p_trace / p_rank
 ```
+
+## Check acf
+mcmc_acf(), mcmc_acf_bar()
+Grid of autocorrelation plots by chain and parameter. The lags argument gives the maximum number of lags at which to calculate the autocorrelation function. mcmc_acf() is a line plot whereas mcmc_acf_bar() is a barplot.
+
+```{r}
+# A function to plot comparisons of thinning values See
+# help("bayesplot_grid") for details on the bayesplot_grid function used here.
+compare_fits_acf <- function(plot1, plot2, plot3, plot4, plot5, plot6, ncol = 2, ...) {
+  bayesplot_grid(
+    plot1, plot2, plot3, plot4, plot5, plot6,
+    grid_args = list(
+      ncol = ncol,
+      top = sprintf("Autocorrelation functions: %d iter and chain thin = %d", n_iter_model, n_thin_model)
+    ),
+    #titles = "Autocorrelation function",
+    #subtitles = sprintf("%d iter and chain thin = %d", n_iter_model, n_thin_model),
+   # subtitles = c("Centered parameterization", 
+    #              "Non-centered parameterization"),
+    ...
+  )# + labs(title="test")
+}
+
+```
+```{r}
+
+```
+
+
+```{r}
+# Drop variables that are all NA (run_diagnostics = 0 quantities)
+draws_df <- as_draws_df(fit$draws())
+
+draws_df_clean <- draws_df |>
+  select(where(~ !all(is.na(.x))))
+
+# ACF
+ p_acf_mu_alpha <- bayesplot::mcmc_acf(draws_df_clean, pars = 'mu_alpha', lags = 10) #+ 
+#   ggtitle("Autocorrelation function: mu_alpha", 
+#           subtitle = sprintf("%d iter and chain thin = %d", n_iter_model, n_thin_model))
+
+p_acf_sigma_alpha <- bayesplot::mcmc_acf(draws_df_clean, pars = 'sigma_alpha', lags = 10) #+ 
+ 
+p_acf_mu_b_log <- bayesplot::mcmc_acf(draws_df_clean, pars = 'mu_b_log', lags = 10) #+ 
+
+p_acf_sigma_b_log <- bayesplot::mcmc_acf(draws_df_clean, pars = 'sigma_b_log', lags = 10)
+
+p_acf_mu_lambda_logit <- bayesplot::mcmc_acf(draws_df_clean, pars = 'mu_lambda_logit', lags = 10)# + 
+
+p_acf_sigma_lambda_logit <- bayesplot::mcmc_acf(draws_df_clean, pars = 'sigma_lambda_logit', lags = 10)#
+
+combined_acf_plot <- compare_fits_acf(p_acf_mu_alpha, p_acf_mu_b_log, p_acf_mu_lambda_logit, p_acf_sigma_alpha, p_acf_sigma_b_log, p_acf_sigma_lambda_logit, ncol=3)
+
+combined_acf_plot
+```
+```{r}
+save_acf_plots = FALSE
+acf_plots_dir = file.path(here('plots', 'hierarchical_hrd_model', 'model_fits'))
+
+if (save_acf_plots){
+  ggsave(filename = sprintf("hier_hrd_acf_%diter_%dthin.png", 
+        n_iter_model, n_thin_model), 
+         plot = combined_acf_plot,
+         path = acf_plots_dir,
+         width = 16,
+         height = 12,
+         units = "cm",
+         dpi = 300
+         )
+}
+```
+
+
+```{r}
+neff <- neff_ratio(fit, pars = c("mu_alpha", "sigma_alpha", "mu_b_log", "sigma_b_log", "mu_lambda_logit", "sigma_lambda_logit"))
+
+mcmc_neff(neff)
+```
+
+
 ## Get generated quantities to prior predictive and posterior predictive
 
 ```{r}
@@ -1095,7 +1183,7 @@ SBC is heavy duty stuff. The SBC has therefore been run at a virtual cluster.
 
 ```{r SBC results}
 # laod file from genome folder - virtual cluster
-sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607171202_hierarchical_hrd_model_3000iter_10thin_2000sims_60subj_40trials_100m_14s_half_normal_COMBINED.rds"))
+sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607171658_hierarchical_hrd_model_3000iter_2thin_2000sims_60subj_40trials_188m_42s_half_normal_COMBINED.rds"))
 
 results <- sbc_obj$results
 
@@ -1107,6 +1195,13 @@ results_default_diag <- as_tibble(results$default_diagnostics)
 results_backend_diag <- as_tibble(results$backend_diagnostics)
 results_combined_diag <- left_join(results_default_diag, results_backend_diag, by = "sim_id")
 ```
+
+```{r}
+hist(results_combined_diag$min_ess_tail)
+hist(results_combined_diag$min_ess_bulk)
+
+```
+
 
 Before we plot the results, we remove the bad fits.
 
@@ -1364,4 +1459,8 @@ print(p4)
 report$breakdown
 ```
 
+Parameter recovery of mu_alpha, sigma_alpha and mu_b_log look all right, mu_lambda_logit and sigma_lambda logit are more challenged, especially the sigma_lambda_logit. 
 
+Simulation based calibration checks are ok-ish, but we have to remove about 17% of the model fits because of bad diagnostics. Especially the ESS values are challenged which indicates that the chains are not exploring the parameter space efficiently. 
+
+The rank histograms look okay at first glance (equally distributed ranks) - except for the mu_lambda_logit parameter, where the model seems to overestimating the parameter values. However, when looking at the plots showing the difference between the sampled and the theoretical cumulative distriution function (CDF), it is evident that the model tends to underestimate the mu_b_log parameter and overestimate the sigma_b_log and mu_lambda_logit parameter (to a much greater extent in the mu_lambda_logit), which matches what we saw in the rank histogram plot. 
