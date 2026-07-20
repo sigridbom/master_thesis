@@ -1183,7 +1183,7 @@ SBC is heavy duty stuff. The SBC has therefore been run at a virtual cluster.
 
 ```{r SBC results}
 # laod file from genome folder - virtual cluster
-sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607171658_hierarchical_hrd_model_3000iter_2thin_2000sims_60subj_40trials_188m_42s_half_normal_COMBINED.rds"))
+sbc_obj <- readRDS(here("scripts_genome", "genome_sbc_results", "2607201406_hierarchical_hrd_model_3000iter_4thin_2000sims_60subj_40trials_124m_19s_half_normal_COMBINED.rds"))
 
 results <- sbc_obj$results
 
@@ -1228,14 +1228,16 @@ Before we plot the results, we remove the bad fits.
 remove_bad_fits <- function(sbc_obj,
                             results_combined_diag,
                              rhat_threshold = 1.01,
+                             min_ess_to_rank_threshold = 0.5,
                              e_bfmi_threshold = 0.2,
                              min_ess_bulk_threshold = 400,
                              min_ess_tail_threshold = 400) {
 
   # --- 1. Build the "bad fit" logical condition, one entry per sim_id ---
-  is_bad <- (results_combined_diag$max_rhat > rhat_threshold) |
-            (results_combined_diag$n_divergent != 0) |
+  is_bad <- (results_combined_diag$n_divergent != 0) |
             (results_combined_diag$n_rejects != 0) |
+            (results_combined_diag$max_rhat > rhat_threshold) |
+            (results_combined_diag$min_ess_to_rank < min_ess_to_rank_threshold)
             (results_combined_diag$min_bfmi <= e_bfmi_threshold) |
             (results_combined_diag$min_ess_tail < min_ess_tail_threshold) |
             (results_combined_diag$min_ess_bulk < min_ess_bulk_threshold)
@@ -1262,9 +1264,10 @@ remove_bad_fits <- function(sbc_obj,
     breakdown <- results_combined_diag %>%
       filter(sim_id %in% bad_sim_ids) %>%
       summarise(
-        n_high_rhat    = sum(max_rhat > rhat_threshold, na.rm = TRUE),
         n_divergent    = sum(n_divergent != 0, na.rm = TRUE),
         n_rejects      = sum(n_rejects != 0, na.rm = TRUE),
+        n_high_rhat    = sum(max_rhat > rhat_threshold, na.rm = TRUE),
+        n_min_ess_to_rank = sum(min_ess_to_rank < min_ess_to_rank_threshold, na.rm = TRUE),
         n_low_bfmi     = sum(min_bfmi <= e_bfmi_threshold, na.rm = TRUE),
         n_low_ess_tail = sum(min_ess_tail < min_ess_tail_threshold, na.rm = TRUE),
         n_low_ess_bulk = sum(min_ess_bulk < min_ess_bulk_threshold, na.rm = TRUE)
@@ -1320,6 +1323,7 @@ remove_bad_fits <- function(sbc_obj,
     new_min_ess_tail = new_min_ess_tail,
     thresholds = list(
       rhat_threshold = rhat_threshold,
+      min_ess_to_rank_threshold = min_ess_to_rank_threshold,
       e_bfmi_threshold = e_bfmi_threshold,
       min_ess_tail_threshold = min_ess_tail_threshold,
       min_ess_bulk_threshold = min_ess_bulk_threshold
@@ -1353,7 +1357,7 @@ results_clean = remove_bad_fits(results, results_combined_diag)
 sbc_plots_dir = here("plots", "hierarchical_hrd_model", "parameter_recovery_and_SBC")
 
 # SAVE PLOTS?
-save_plots = FALSE
+save_plots = TRUE
 ```
 
 
@@ -1464,3 +1468,5 @@ Parameter recovery of mu_alpha, sigma_alpha and mu_b_log look all right, mu_lamb
 Simulation based calibration checks are ok-ish, but we have to remove about 17% of the model fits because of bad diagnostics. Especially the ESS values are challenged which indicates that the chains are not exploring the parameter space efficiently. 
 
 The rank histograms look okay at first glance (equally distributed ranks) - except for the mu_lambda_logit parameter, where the model seems to overestimating the parameter values. However, when looking at the plots showing the difference between the sampled and the theoretical cumulative distriution function (CDF), it is evident that the model tends to underestimate the mu_b_log parameter and overestimate the sigma_b_log and mu_lambda_logit parameter (to a much greater extent in the mu_lambda_logit), which matches what we saw in the rank histogram plot. 
+
+OBS! the min_Ess_to_rank check was added after the 3000 iter thin 4 was run. So all the other plots does not take this diagnostic into account when plotting the rank and parameter recovery results.
