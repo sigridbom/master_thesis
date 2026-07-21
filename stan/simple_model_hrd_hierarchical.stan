@@ -70,7 +70,8 @@ data {
 
   real prior_mu_lambda_logit_loc;
   real<lower=0> prior_mu_lambda_logit_scale;
-  real<lower=0> prior_sigma_lambda_logit_rate;
+  real<lower=0> prior_sigma_lambda_logit_loc;
+  real<lower=0> prior_sigma_lambda_logit_scale;
   
   int<lower=0, upper=1> run_diagnostics;  // 1 = full diagnostics; 0 = simulation based calibration only
 }
@@ -127,7 +128,7 @@ transformed parameters {
     // inv_logit(...) because chance performance in a 2AFC task is 0.5 -- a
     // pure lapse trial cannot produce systematic bias above chance. Cap is
     // generous; empirical lapse rates are typically <0.05.
-    lambda[s] = 0.5 * inv_logit(mu_lambda_logit + sigma_lambda_logit * lambda_logit_z[s]);
+    lambda[s] = inv_logit(mu_lambda_logit + sigma_lambda_logit * lambda_logit_z[s]);
   }
 }
 
@@ -148,7 +149,8 @@ model {
                                              prior_sigma_b_log_scale);
   target += normal_lpdf(mu_lambda_logit    | prior_mu_lambda_logit_loc,
                                              prior_mu_lambda_logit_scale);
-  target += exponential_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_rate);
+  target += normal_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_loc,
+                                             prior_sigma_lambda_logit_scale);
 
   // ----- subject-level raw priors -----
   // The heart of the NCP: raw z-scores live in a unit-normal space that
@@ -181,8 +183,8 @@ model {
     vector[N] b_n = beta[subj];    // gather: per-trial slope
     vector[N] l_n = lambda[subj];  // gather: per-trial lapse
 
-    vector[N] theta = l_n + (1 - 2 * l_n)
-                            .* Phi_approx((dBPM - a_n) ./ b_n);
+    vector[N] theta = l_n /2 + (1 - l_n)
+                            .* (0.5 + 0.5 * erf(dBPM - a_n) ./ (b_n * sqrt(2)));
 
     target += bernoulli_lpmf(choice | theta);
   }
@@ -214,7 +216,8 @@ generated quantities {
                                                  prior_sigma_b_log_scale));
   real mu_lambda_logit_prior     = normal_rng(prior_mu_lambda_logit_loc,
                                               prior_mu_lambda_logit_scale);
-  real sigma_lambda_logit_prior  = exponential_rng(prior_sigma_lambda_logit_rate);
+  real sigma_lambda_logit_prior  = abs(normal_rng(prior_sigma_lambda_logit_loc,
+                                                  prior_sigma_lambda_logit_scale));
 
   // ----- (2) subject-level prior draws -----
   // For each posterior draw, we generate a fresh "prior population" of S
@@ -231,7 +234,7 @@ generated quantities {
 
     alpha_prior[s]  = mu_alpha_prior + sigma_alpha_prior * az;
     beta_prior[s]   = exp(mu_b_log_prior + sigma_b_log_prior * bz);
-    lambda_prior[s] = 0.5 * inv_logit(mu_lambda_logit_prior
+    lambda_prior[s] = inv_logit(mu_lambda_logit_prior
                                       + sigma_lambda_logit_prior * lz);
   }
 
@@ -272,8 +275,8 @@ generated quantities {
       choice_prior_pred[n] = bernoulli_rng(theta_prior_p[n]); 
 
       // posterior predictive theta (using POSTERIOR subject params)
-      theta_p[n] = lambda[s]
-                   + (1 - 2 * lambda[s])
+      theta_p[n] = lambda[s] / 2
+                   + (1 - lambda[s])
                      * (0.5+0.5*erf((dBPM[n] - alpha[s]) / (beta[s]*sqrt(2))));
       choice_pred[n] = bernoulli_rng(theta_p[n]);
   
@@ -281,7 +284,7 @@ generated quantities {
       // LOO-PIT, and loo_compare(). Cheap to compute, costs you nothing if
       // you never use it; expensive to add later (requires refit).
       
-      theta[n] = lambda[s] + (1 - 2 * lambda[s]) * (0.5+0.5*erf((dBPM[n] - alpha[s]) / (beta[s]*sqrt(2))));
+      theta[n] = lambda[s] / 2 + (1 - lambda[s]) * (0.5+0.5*erf((dBPM[n] - alpha[s]) / (beta[s]*sqrt(2))));
       y_rep[n] = bernoulli_rng(theta[n]);
       log_lik[n] = bernoulli_lpmf(choice[n] | theta_p[n]);
   
@@ -303,6 +306,7 @@ generated quantities {
                                                    prior_sigma_b_log_scale);
     lprior_mu_lambda_logit = normal_lpdf(mu_lambda_logit | prior_mu_lambda_logit_loc, 
                                                           prior_mu_lambda_logit_scale);
-    lprior_sigma_lambda_logit = exponential_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_rate);
+    lprior_sigma_lambda_logit = normal_lpdf(sigma_lambda_logit | prior_sigma_lambda_logit_loc,
+                                                                 prior_sigma_lambda_logit_scale);
   }
 }
